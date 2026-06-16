@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>双路防线</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07090e; color: #ddd;
+         font-family: -apple-system, sans-serif; overflow: hidden;
+         display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #wrap { position: relative; }
+  canvas { display: block; border: 1px solid #222; background: #000; touch-action: none;
+           border-radius: 8px; }
+  #bar { display: flex; gap: 8px; align-items: center; padding: 8px; }
+  button { background: #1d2738; color: #cfe; border: 1px solid #3a4a6b; border-radius: 6px;
+           padding: 6px 14px; font-size: 14px; cursor: pointer; }
+  button.on { background: #3DE0C8; color: #042; font-weight: bold; }
+  /* 通关/阵亡覆盖层 */
+  #over { position: absolute; inset: 0; display: none; flex-direction: column;
+          align-items: center; justify-content: center; gap: 16px;
+          background: rgba(7,9,14,0.82); border-radius: 8px; }
+  #over.show { display: flex; }
+  #over h1 { margin: 0; font-size: 30px; }
+  #over button { font-size: 18px; padding: 10px 26px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="watch">👀 看 AI 玩</button>
+  <span id="hint" style="font-size:13px;color:#7a8aa5">手指/鼠标左右拖动控制 · 移动时火力减弱</span>
+</div>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="over">
+    <h1 id="overTitle"></h1>
+    <div id="overSub" style="font-size:15px;color:#9fd"></div>
+    <button id="again">再来一局（回第1关）</button>
+  </div>
+</div>
+
+<script type="module">
+import { GameWorld } from './lib/world.js';
+import { makeLookaheadBot, SKILL_EXPERT } from './lib/bots.js';
+import { Renderer } from './render.js';
+import { PLAYER_MIN_X, PLAYER_MAX_X } from './lib/types.js';
+
+// 画布按竖屏 9:16 适配屏幕高度（最大 420×747，留出控制条）
+const cv = document.getElementById('cv');
+const maxH = Math.min(747, window.innerHeight - 90);
+const cssH = maxH, cssW = Math.round(cssH * 750 / 1334);
+cv.style.width = cssW + 'px'; cv.style.height = cssH + 'px';
+
+const renderer = new Renderer(cv);
+const overEl = document.getElementById('over');
+const overTitle = document.getElementById('overTitle');
+const overSub = document.getElementById('overSub');
+
+let world, bot;
+let watchAI = false;     // true=看 AI 自动玩；false=真人手玩
+let manualX = 0;         // 真人目标 X
+let acc = 0;
+
+function reset() {
+  world = new GameWorld(); world.start(1, (Date.now() & 0xffff) || 1);
+  bot = makeLookaheadBot(SKILL_EXPERT, 12345); bot.reset?.();
+  manualX = world.playerX; acc = 0;
+  overEl.classList.remove('show');
+  renderer.reset?.();
+}
+
+function stepOnce() {
+  if (!world.running) return;
+  const targetX = watchAI ? bot.decide(world) : manualX;
+  const events = world.step(1 / 60, { playerTargetX: targetX });
+  renderer.consume(events);   // 把事件喂给渲染层做 juice（闪光/震屏/升级弹字）
+  if (!world.running) showOver();
+}
+
+function showOver() {
+  if (world.won) {
+    overTitle.textContent = '🏆 通关全5关！';
+    overTitle.style.color = '#5f5';
+    overSub.textContent = `剩余 HP ${Math.ceil(world.state.hp)} · 武器${world.state.weaponLevel} ×${world.state.personCount}`;
+  } else {
+    overTitle.textContent = '💀 阵亡';
+    overTitle.style.color = '#f66';
+    overSub.textContent = `打到第 ${world.state.level} 关 · 死了回第1关，再来`;
+  }
+  overEl.classList.add('show');
+}
+
+function loop() {
+  // 真人模式实时 1×；看 AI 时也 1× 看手感（要快进可后续加）
+  acc += 1;
+  while (acc >= 1) { stepOnce(); acc -= 1; }
+  renderer.draw(world);
+  requestAnimationFrame(loop);
+}
+
+// ---- 真人输入：左右拖动 → playerTargetX ----
+function setManualX(clientX) {
+  const r = cv.getBoundingClientRect();
+  const x = ((clientX - r.left) / r.width - 0.5) * 750;
+  manualX = Math.max(PLAYER_MIN_X, Math.min(PLAYER_MAX_X, x));
+}
+cv.addEventListener('pointermove', e => { if (!watchAI && (e.buttons || e.pointerType==='touch')) setManualX(e.clientX); });
+cv.addEventListener('pointerdown', e => { if (!watchAI) setManualX(e.clientX); });
+
+// ---- 控件 ----
+document.getElementById('watch').onclick = e => {
+  watchAI = !watchAI;
+  e.target.classList.toggle('on', watchAI);
+  e.target.textContent = watchAI ? '🎮 我自己玩' : '👀 看 AI 玩';
+  reset();
+};
+document.getElementById('again').onclick = reset;
+
+reset();
+loop();
+</script>
+</body>
+</html>
