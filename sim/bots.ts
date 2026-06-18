@@ -1,17 +1,17 @@
-// 玩家模型 —— 递归前瞻式(receding-horizon planner / depth-limited game tree)，零手写规则偏见
-// 业界标准(Browne et al. MCTS综述 / Zook&Riedl 自动游戏测试)：用游戏前向模型规划"未来一串泳道选择"，
-// 而非手写 if-else，也不是"假设整段不动"的单路 rollout。
-//
-// 关键修正（取代旧版「rollout 假设整段 horizon 待同一路」）：
-//   旧版 bug：每个候选只算"一路待到底"的终局分 → 评估失真 → noise/decideEverySec 旋钮反向，
-//             三档（菜/中/强）无法拉开梯度，甚至"完美评估反而更菜"。
-//   新版：bot 在前瞻里把 horizon 切成若干段(segSec)，递归在每个段界重新选左/右，
-//         真正模拟"高水平玩家会按时机来回切换"。深度越大=看得越远=打得越好 → 旋钮恢复单调。
-// 水平档据此自然映射：planDepth(看几步)=核心技巧轴，segSec(规划粒度)与 noise(误判) 辅助。
+// 玩家模型 —— 极限刷道具策略(greedy edge-farming policy)，匹配命中模型「占领某路=对该路全体输出」。
+// 真实玩家心智(用户实测口径，逐字)：
+//   "我当前火力能顶住兵线、兵线缓慢后移，我就去刷道具；直到怪马上要贴到我扣血才回去刷怪；
+//    稍微顶起一点就立刻又去刷道具，用非常极限的方式刷道具提升 DPS。"
+// → 核心信号是【兵线速度(最前排怪的移动方向)】，不是怪海存量：
+//   兵线后移(DPS≥出怪速率) → 刷道具；兵线前移且压到贴脸线 → 脉冲回防顶一下；
+//   兵线一转后移(顶起一点) → 立刻回去刷。怪海多厚不影响决策。
+// 目标函数：在"兵线不破(不漏怪扣血)"约束下，最大化刷道具时间。
+// 水平档 = 对兵线趋势的判断准度 → 操作极限程度：
+//   高手判断准 → 敢贴到几乎扣血才回防(贴脸线极近)+反应快+几乎不误判趋势 → 刷得最满、DPS 雪球最大
+//   菜鸟判断差 → 兵线还远就慌着回防(贴脸线远)+反应慢+误判趋势 → 刷不够、雪球小、被威胁曲线压死
 import { GameWorld } from '../assets/scripts/core/world';
 import {
-    LANE_LEFT_X, LANE_RIGHT_X, computeDps,
-    GateType, WEAPON_STATS, MAX_WEAPON_LEVEL, MAX_PERSON, SHOOT_INTERVAL,
+    LANE_LEFT_X, LANE_RIGHT_X, BASELINE_Y,
 } from '../assets/scripts/core/types';
 
 export interface Bot {
@@ -20,116 +20,79 @@ export interface Bot {
     reset?(): void;
 }
 
-// bot 水平参数：
-//   planDepth   前瞻规划几个决策段（越深=看得越远=越强，是核心技巧轴）
-//   segSec      每段时长（规划粒度，秒）；planDepth*segSec = 总前瞻时长
-//   decideEverySec 多久重规划一次（菜玩家反应慢=大）
-//   noise       评估打分噪声（菜玩家判断不准=大）
+// bot 水平参数（极限刷道具型）：
+//   reactSec    反应/重决策周期（判断慢=大；高手小）
+//   trendNoise  对兵线速度(前移/后移)的判断误差（看不准趋势=大，0~1 相对扰动；高手≈0）
+//   edgeFrac    贴脸线 = 屏顶到底线全程的占比。兵线前移且压进此线内才回防。
+//               越小=越敢贴脸(让怪逼到几乎扣血才回防)=操作越极限=刷得越满。高手小、菜鸟大。
 export interface Skill {
-    planDepth: number;
-    segSec: number;
-    decideEverySec: number;
-    noise: number;
+    reactSec: number;
+    trendNoise: number;
+    edgeFrac: number;
 }
 
-// 评估世界状态好坏：活着 + 高血 + 高能力(DPS) + 推进关卡。死了重罚。
-// 权重要点：DPS 是通关关键杠杆，权重必须高到"刷道具的长期收益"能压过"短期漏怪掉血"，
-// 否则前瞻 bot 永远不敢去刷道具（短horizon只见代价不见延迟收益）。
-// 进度奖励(gateProgress)：即使道具没打穿，"打掉一部分血"也算收益，缓解延迟兑现问题。
-function scoreWorld(w: GameWorld): number {
-    if (w.gameOver && !w.won) return -100000;       // 死了
-    if (w.won) return 100000;                         // 通关全部
-    const hp = w.state.hp;
-    const dps = computeDps(w.state);
-    const levelBonus = w.state.level * 8000;
-    // HP 与 DPS 权重平衡：HP 略高(保命优先)，DPS 中等(成长重要但不盖过生存)
-    const base = levelBonus + hp * 90 + dps * 18;
-    return base + gateLookaheadValue(w);
+// 当前 slot0 是否有道具可刷。升级无上限,只要有门就值得刷(每次都 ×2 增益)。
+function gateWorthFarming(w: GameWorld): boolean {
+    return w.gates.some(gg => gg.slot === 0);
 }
 
-// 道具门「延迟奖励整形」（potential-based reward shaping，业界标准修法）：
-// 致命陷阱——道具门打穿需≈8s，但前瞻 horizon 只有几秒，规划者永远看不到升级完成、只见离开右路的代价，
-// 于是深度越大越自信地 camp 右路、停手枪、第2关被刷（实测复现）。
-// 解法：给【当前可打的门】按已打进度，预支这次升级将带来的 DPS 增益价值（用与 dps 同权重 *18 计），
-// 让"打了一半道具"在 horizon 内就被看见为成长，bot 才会像真人高手那样肯去左路投资。
-function gateLookaheadValue(w: GameWorld): number {
-    const g = w.gates.find(gg => (gg.slot === 0 || gg.freeDrop) && gg.hp < gg.maxHp);
-    if (!g) return 0;
-    const progress = 1 - g.hp / g.maxHp;            // 0~1 已打掉比例
-    const st = w.state;
-    let dpsGain = 0;                                  // 这次门打穿后净增的 DPS
-    if (g.type === GateType.WEAPON_UP && st.weaponLevel < MAX_WEAPON_LEVEL) {
-        const next = WEAPON_STATS[st.weaponLevel + 1].damage - WEAPON_STATS[st.weaponLevel].damage;
-        dpsGain = next * st.personCount * (1 / SHOOT_INTERVAL);
-    } else if (g.type === GateType.PERSON_UP && st.personCount < MAX_PERSON) {
-        dpsGain = WEAPON_STATS[st.weaponLevel].damage * (1 / SHOOT_INTERVAL);  // +1 人 = +1 份火力
-    } else if (g.type === GateType.HEAL) {
-        return progress * (g.healAmount ?? 30) * 90;  // 补血门按 HP 权重折算
-    }
-    // 按 dps 同权重(*18) 预支增益；进度平方让"快打穿"边际更高、避免浅尝辄止刷半截就走
-    return progress * progress * dpsGain * 18;
+// 最前排怪离底线的【绝对距离】（像素）。怪 y 越小越靠近底线 BASELINE_Y。
+// 没怪 = 兵线无威胁，返回 Infinity。已压到底线 = 0。
+function frontGap(w: GameWorld): number {
+    let minY = Infinity;
+    for (const e of w.enemies) if (e.y < minY) minY = e.y;
+    if (minY === Infinity) return Infinity;
+    return Math.max(0, minY - BASELINE_Y);
 }
 
-// 把世界 sim 沿 targetX 推进 segSec 秒（原地修改 sim）。返回 false 表示中途死亡/结束。
-function advance(sim: GameWorld, targetX: number, segSec: number): boolean {
-    const dt = 1 / 30;  // 粗步长省算力，够准
-    const steps = Math.floor(segSec / dt);
-    for (let i = 0; i < steps; i++) {
-        if (!sim.running) return false;
-        sim.step(dt, { playerTargetX: targetX });
-    }
-    return sim.running;
-}
-
-// 递归前瞻：从 sim 出发，往 firstX 走一段，再在剩余 depth-1 段里递归选最优左/右，
-// 返回这条最优规划链的终局评分（minimax 里的 max 节点——bot 自己选最好的未来）。
-// depth=剩余决策段数。这是修正的核心：未来允许换路，深度越大评估越接近真实最优。
-function planScore(sim: GameWorld, firstX: number, depth: number, segSec: number): number {
-    advance(sim, firstX, segSec);
-    if (!sim.running || depth <= 1) return scoreWorld(sim);
-    // 还能继续看：分别试"下一段去左/去右"，取更优的那条未来
-    const bestL = planScore(sim.clone(), LANE_LEFT_X, depth - 1, segSec);
-    const bestR = planScore(sim.clone(), LANE_RIGHT_X, depth - 1, segSec);
-    return Math.max(bestL, bestR);
-}
-
-// 前瞻 bot 工厂
-export function makeLookaheadBot(skill: Skill, seed = 12345): Bot {
+// 极限刷道具 bot 工厂。
+// 决策迟滞：决定回防/回刷后【承诺】到状态条件反转，不每帧横跳(横跳=移动半火力，实测更弱)。
+export function makeStrategyBot(skill: Skill, seed = 12345): Bot {
     let lastDecideT = -99;
-    let chosenX = LANE_RIGHT_X;
-    // bot 自己的随机源（评估噪声用），与世界 rng 独立
+    let chosenX = LANE_LEFT_X;        // 默认刷道具(贪婪)：开局就去左路
+    let prevGap = Infinity;           // 上次决策时的兵线距离（用于算速度=趋势）
     let s = seed >>> 0;
     const rng = () => { s = (s + 0x9E3779B9) | 0; let t = Math.imul(s ^ (s >>> 16), 0x45d9f3b); t = Math.imul(t ^ (t >>> 16), 0x45d9f3b); return ((t ^ (t >>> 16)) >>> 0) / 4294967296; };
+    // 贴脸线绝对距离 = 全程(屏顶-底线) × edgeFrac。兵线前移且压进此线 → 回防。
+    const fullSpan = 667 - BASELINE_Y;   // SCREEN_TOP(667) 到 BASELINE_Y 的总落差
+    const edgeGap = fullSpan * skill.edgeFrac;
+    // committed: 'farm'=正占左路刷道具；'defend'=正占右路压兵线
+    let committed: 'farm' | 'defend' = 'farm';
     return {
-        name: `LA(depth=${skill.planDepth},seg=${skill.segSec},n=${skill.noise})`,
-        reset() { lastDecideT = -99; chosenX = LANE_RIGHT_X; },
+        name: `Edge(react=${skill.reactSec},noise=${skill.trendNoise},edge=${skill.edgeFrac})`,
+        reset() { lastDecideT = -99; chosenX = LANE_LEFT_X; prevGap = Infinity; committed = 'farm'; },
         decide(w: GameWorld): number {
-            if (w.levelTime - lastDecideT >= skill.decideEverySec) {
+            if (w.levelTime - lastDecideT >= skill.reactSec) {
                 lastDecideT = w.levelTime;
-                // 候选首步：去右路打怪 / 去左路刷道具。各自递归规划未来 planDepth 段、取最优未来，打分、选最优首步
-                const scoreR = planScore(w.clone(), LANE_RIGHT_X, skill.planDepth, skill.segSec) + (rng() - 0.5) * skill.noise;
-                const scoreL = planScore(w.clone(), LANE_LEFT_X, skill.planDepth, skill.segSec) + (rng() - 0.5) * skill.noise;
-                // 切换迟滞：换泳道要明显更优(>SWITCH_MARGIN)才切。
-                // 对应真实的移动火力损失——频繁横跳本就该被惩罚，与游戏机制一致。
-                // ⚠️ margin 必须与实际分差量级匹配：道具升级的延迟收益在 horizon 内只体现为约几十分的边际优势，
-                // 旧值 1500 比真实分差大 60×，导致 bot 永远跨不过门槛去刷道具、停手枪 camp 右路（实测复现）。
-                const cur = chosenX < -50 ? 'L' : 'R';
-                const SWITCH_MARGIN = 600;
-                if (cur === 'R' && scoreL > scoreR + SWITCH_MARGIN) chosenX = LANE_LEFT_X;
-                else if (cur === 'L' && scoreR > scoreL + SWITCH_MARGIN) chosenX = LANE_RIGHT_X;
-                // 否则保持当前泳道（迟滞）
+                const gap = frontGap(w);
+                // 兵线速度 = 本次与上次距离之差（带判断误差）。>0 后移(DPS够,兵线在退)，<0 前移(怪压上来)。
+                const rawTrend = (gap === Infinity || prevGap === Infinity) ? 1 : (gap - prevGap);
+                const trend = rawTrend * (1 + (rng() - 0.5) * 2 * skill.trendNoise);
+                prevGap = gap;
+
+                // 道具满级：左路无意义，纯打怪
+                if (!gateWorthFarming(w)) { committed = 'defend'; chosenX = LANE_RIGHT_X; }
+                // 贴脸保险：兵线已压进贴脸线 → 必守（不管趋势，防贴脸瞬间送命）
+                else if (gap <= edgeGap) { committed = 'defend'; chosenX = LANE_RIGHT_X; }
+                else if (committed === 'defend') {
+                    // 守家顶兵线中：只要兵线转为后移(顶起一点了)→ 立刻回去刷（极限：不等顶回安全区）
+                    if (trend > 0) { committed = 'farm'; chosenX = LANE_LEFT_X; }
+                    else chosenX = LANE_RIGHT_X;
+                } else {
+                    // 刷道具中(默认贪婪)：兵线在前移(顶不住,怪压上来)→ 回防；后移/持平→继续刷
+                    if (trend < 0) { committed = 'defend'; chosenX = LANE_RIGHT_X; }
+                    else chosenX = LANE_LEFT_X;
+                }
             }
             return chosenX;
         },
     };
 }
 
-// 预设水平档（菜/中/强）—— 核心梯度在 planDepth（看几步）+ noise（判得准不准），二者真实相关：
-//   高手：看 4 步、几乎不误判、反应快 → 敢按时机来回切换刷道具又守住右路
-//   普通：看 3 步、中等误判
-//   菜鸟：只看 1 步（=短视"一路待到底"）、大误判、反应慢
-// 注：avgReach 在菜/普间区分有限——因游戏前3关本就可survive（设计如此），早期生存有"地板"，
-// 真正拉开梯度的是【整体通关率】与【高手单关通关率】，见 winrate.ts 曲线（高手>90%@L1、全程<5%）。
-export const SKILL_NOVICE: Skill = { planDepth: 1, segSec: 1.6, decideEverySec: 1.4, noise: 40000 };
-export const SKILL_AVERAGE: Skill = { planDepth: 3, segSec: 1.6, decideEverySec: 0.7, noise: 5000 };
-export const SKILL_EXPERT: Skill = { planDepth: 4, segSec: 1.5, decideEverySec: 0.4, noise: 800 };
+// 预设水平档（菜/中/高）—— 差异 = 对兵线趋势的判断准度 → 操作极限程度：
+//   高手：判断准(trendNoise≈0)+反应快(reactSec 小)+敢贴到几乎扣血才回防(edgeFrac 小=极限)→刷最满
+//   普通：判断有偏差+反应中等+兵线还较远就回防(edgeFrac 中)→刷得够用不极限
+//   菜鸟：判断差(误判趋势)+反应慢+早早慌着回防(edgeFrac 大=保守)→刷不够，雪球小，后期被威胁曲线压死
+export const SKILL_NOVICE: Skill  = { reactSec: 0.45, trendNoise: 0.5,  edgeFrac: 0.30 };
+export const SKILL_AVERAGE: Skill = { reactSec: 0.28, trendNoise: 0.25, edgeFrac: 0.16 };
+export const SKILL_EXPERT: Skill  = { reactSec: 0.13, trendNoise: 0.05, edgeFrac: 0.07 };

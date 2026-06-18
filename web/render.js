@@ -1,7 +1,7 @@
 // 网页 Canvas 渲染层 —— 读 GameWorld 快照画图，复用纯TS核心（零改动）
 // 坐标系：world 原点屏幕中心、Y 向上；canvas 原点左上、Y 向下 → 需翻转
 import {
-    LANE_LEFT_X, LANE_RIGHT_X, SCREEN_TOP, PLAYER_Y, BASELINE_Y, WEAPON_STATS, WEAPON_NAMES, PERSON_OFFSETS,
+    LANE_LEFT_X, LANE_RIGHT_X, SCREEN_TOP, PLAYER_Y, BASELINE_Y, weaponStat, weaponName, personLayout,
 } from './lib/types.js';
 
 const W = 375, H = 667;   // 逻辑半宽/半高（world 范围 X∈[-375,375] Y∈[-667,667] 的一半）
@@ -9,7 +9,7 @@ const W = 375, H = 667;   // 逻辑半宽/半高（world 范围 X∈[-375,375] Y
 const ENEMY_COLORS = {
     grunt: '#C2D44A', runner: '#FF8A3C', brute: '#FF4D6D', mini_boss: '#CC44FF', boss: '#FF0044',
 };
-const GATE_COLORS = { weapon_up: '#3DE0C8', person_up: '#7EE9FF', heal: '#34D399' };
+const GATE_COLORS = { weapon_up: '#3DE0C8', person_up: '#7EE9FF' };
 
 export class Renderer {
     constructor(canvas) {
@@ -41,16 +41,15 @@ export class Renderer {
                     this.sparks.push({ x: LANE_RIGHT_X + (Math.random()-0.5)*60, y: -380 + (Math.random()-0.5)*80,
                                        vx: (Math.random()-0.5)*8, vy: 4+Math.random()*6, life: 1, col: '#FFD86B' });
             } else if (e.kind === 'player_hit' && e.hp < this._lastHp) {
-                // 仅掉血时闪红+震屏（heal 也发 player_hit，故比对 hp）
+                // 掉血时闪红+震屏
                 this.hurtFlash = 1; this.shake = Math.max(this.shake, 14);
             } else if (e.kind === 'weapon_up') {
                 // 显示升到的具体武器名（不是泛泛"UP"），让"变强"可感知
-                this.pops.push({ life: 1.6, text: '⬆ ' + WEAPON_NAMES[e.level], col: WEAPON_STATS[e.level].color });
+                this.pops.push({ life: 1.6, text: '⬆ ' + weaponName(e.level), col: weaponStat(e.level).color });
                 this.shake = Math.max(this.shake, 6);
             } else if (e.kind === 'person_up') {
-                this.pops.push({ life: 1.6, text: '+1 人 → ×' + e.count, col: '#7EE9FF' });
-            } else if (e.kind === 'heal') {
-                this.pops.push({ life: 1.3, text: '+' + e.amount + ' 血', col: '#34D399' });
+                // 翻倍加人：本次新增 = 新总数的一半(count 是翻倍后的总人数)
+                this.pops.push({ life: 1.6, text: '+' + Math.floor(e.count / 2) + ' 人 → ×' + e.count, col: '#7EE9FF' });
             } else if (e.kind === 'level_clear') {
                 this.banner = { life: 2.2, text: '第 ' + e.level + ' 关 通关！', col: '#3DE0C8' };
                 this.shake = Math.max(this.shake, 12);
@@ -154,29 +153,44 @@ export class Renderer {
         for (const g of w.gates) {
             const x = this.tx(g.x), y = this.ty(g.y);
             const gw = 140, gh = 64;
-            const active = g.slot === 0 || g.freeDrop;
+            const active = g.slot === 0;   // 只有 slot0(玩家正在打的)是活跃门、显示血量
             const col = GATE_COLORS[g.type] || '#888';
-            // 血量填充
-            const ratio = g.maxHp > 0 ? Math.max(0, g.hp / g.maxHp) : 1;
+            // 进度填充（slot0 才显示打穿进度条；后排只画框，不显示进度）
+            const prog = Math.max(0, Math.min(1, g.progress || 0));
             c.fillStyle = this._hexA(col, active ? 0.25 : 0.12);
             this._roundRect(c, x - gw / 2, y - gh / 2, gw, gh, 12); c.fill();
             if (active) {
                 c.fillStyle = this._hexA(col, 0.4);
-                this._roundRect(c, x - gw / 2, y - gh / 2, gw * ratio, gh, 12); c.fill();
+                this._roundRect(c, x - gw / 2, y - gh / 2, gw * prog, gh, 12); c.fill();
             }
             c.strokeStyle = col; c.lineWidth = active ? 3 : 1.5;
             this._roundRect(c, x - gw / 2, y - gh / 2, gw, gh, 12); c.stroke();
-            // 文字
+            // 文字（道具名）。加人门动态显示"轮到它打穿时"会加多少人——翻倍机制下,
+            // 它前面(slot 更小=更靠下,会先打穿)每多一个加人门,人数就先翻倍一次。
+            // 所以本门加的量 = 当前人数 × 2^(前面更靠下的加人门数)。修"后排门显当前人数=错、到底才对"的 bug。
+            let label = g.label;
+            if (g.type === 'person_up') {
+                let ahead = 0;
+                for (const o of w.gates) if (o.type === 'person_up' && o.slot < g.slot) ahead++;
+                const before = w.state.personCount * Math.pow(2, ahead);   // 打穿前人数(无上限)
+                label = `+${before} 人`;   // 翻倍机制下加的量 = 打穿前人数(翻倍后-翻倍前 = before)
+            }
             c.fillStyle = '#eaf0fa'; c.textAlign = 'center'; c.textBaseline = 'middle';
-            c.font = '20px sans-serif'; c.fillText(g.label, x, y - 12);
-            if (active) { c.font = 'bold 26px sans-serif'; c.fillText(String(Math.max(0, Math.ceil(g.hp))), x, y + 14); }
+            c.font = '20px sans-serif'; c.fillText(label, x, y);
         }
     }
 
     _enemies(c, w) {
-        for (const e of w.enemies) {
-            const x = this.tx(e.x), y = this.ty(e.y), r = e.cfg.radius;
-            c.fillStyle = ENEMY_COLORS[e.cfg.type] || '#fff';
+        // 先画普通怪、后画波次 Boss → Boss 永远在怪海【最上方】不被遮挡(用户要求 z-order)。
+        // isWaveBoss 标记本关 Boss(与类型无关,可能是 brute/mini_boss/boss)。
+        const ordered = [...w.enemies].sort((a, b) => (a.isWaveBoss ? 1 : 0) - (b.isWaveBoss ? 1 : 0));
+        for (const e of ordered) {
+            // 视觉分级：怪越硬(maxHp 越高)→越大 + 颜色越红。强度一眼可辨(业界可读性标准)。
+            // tier 0~1：按 maxHp 对数分级（怪海里 hp 跨度大，用 log 压缩）
+            const tier = Math.max(0, Math.min(1, Math.log2(Math.max(1, e.maxHp)) / 7));  // hp 1~128 → 0~1
+            const x = this.tx(e.x), y = this.ty(e.y);
+            const r = e.cfg.radius * (1 + tier * 0.8);   // 越硬越大（最多 1.8 倍）
+            c.fillStyle = this._tierColor(e.cfg.type, tier);
             if (e.cfg.type === 'boss' || e.cfg.type === 'mini_boss') {
                 this._poly(c, x, y, r, e.cfg.type === 'boss' ? 6 : 5); c.fill();
             } else if (e.cfg.type === 'brute') {
@@ -184,46 +198,93 @@ export class Renderer {
             } else {
                 c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
             }
-            // boss 血条
-            if (e.cfg.type === 'boss' || e.cfg.type === 'mini_boss') {
-                const bw = r * 2.4, ratio = Math.max(0, e.hp / e.maxHp);
-                c.fillStyle = 'rgba(40,10,10,0.8)'; c.fillRect(x - bw / 2, y - r - 14, bw, 6);
-                c.fillStyle = '#FF5C7A'; c.fillRect(x - bw / 2, y - r - 14, bw * ratio, 6);
+            // 高 tier 普通怪加深色描边（剪影增强可读性）
+            if (tier > 0.4 && e.cfg.type !== 'boss' && e.cfg.type !== 'mini_boss') {
+                c.strokeStyle = 'rgba(120,0,20,0.8)'; c.lineWidth = 2 + tier * 3;
+                if (e.cfg.type === 'brute') { this._roundRect(c, x - r, y - r*0.6, r*2, r*1.2, 8); c.stroke(); }
+                else { c.beginPath(); c.arc(x, y, r, 0, Math.PI*2); c.stroke(); }
+            }
+            // Boss 血条：按 isWaveBoss 判断(本关关底 Boss,与类型无关——L1/L2 的 BRUTE Boss 也有,普通 brute 小怪没有)。
+            if (e.isWaveBoss) {
+                const bw = Math.max(r * 2.4, 90), bh = 8, by = y - r - 18;
+                const ratio = Math.max(0, e.hp / e.maxHp);
+                c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillRect(x - bw/2 - 1, by - 1, bw + 2, bh + 2);   // 黑边底
+                c.fillStyle = 'rgba(60,15,15,0.9)'; c.fillRect(x - bw/2, by, bw, bh);                  // 空槽
+                c.fillStyle = ratio > 0.3 ? '#FF5C7A' : '#FFD23C'; c.fillRect(x - bw/2, by, bw * ratio, bh); // 血(低血变黄)
             }
         }
     }
 
+    // 怪颜色按强度 tier 往红移（越硬越红，可读性）
+    _tierColor(type, tier) {
+        const base = ENEMY_COLORS[type] || '#fff';
+        if (type === 'boss' || type === 'mini_boss') return base;
+        // 基础色 → 高威胁红，线性插值
+        const n = parseInt(base.slice(1), 16);
+        const br = (n>>16)&255, bg = (n>>8)&255, bb = n&255;
+        const r = Math.round(br + (220 - br) * tier);
+        const g = Math.round(bg + (30 - bg) * tier);
+        const b = Math.round(bb + (40 - bb) * tier);
+        return `rgb(${r},${g},${b})`;
+    }
+
     _bullets(c, w) {
-        const col = WEAPON_STATS[w.state.weaponLevel].color;
+        const col = weaponStat(w.state.weaponLevel).color;
         for (const b of w.bullets) {
             const x = this.tx(b.x), y = this.ty(b.y);
-            if (b.weak) {
-                // 移动中发射的弱化子弹：半透明、细、短 —— 直观外显"移动损失火力"
-                c.globalAlpha = 0.4; c.strokeStyle = col; c.lineWidth = b.width * 0.55;
-                c.beginPath(); c.moveTo(x, y); c.lineTo(x, y - b.width * 1.8); c.stroke();
-                c.globalAlpha = 1;
-            } else {
-                c.strokeStyle = col; c.lineWidth = b.width;
-                c.beginPath(); c.moveTo(x, y); c.lineTo(x, y - b.width * 3); c.stroke();
-            }
+            // 拖尾沿飞行方向（飞向目标怪/门），而非固定竖直——与"自动弹幕"一致
+            const dx = this.tx(b.tx) - x, dy = this.ty(b.ty) - y;
+            const d = Math.hypot(dx, dy) || 1;
+            const len = (b.weak ? 1.8 : 3) * b.width;
+            const tailX = x - dx / d * len, tailY = y - dy / d * len;
+            c.globalAlpha = b.weak ? 0.4 : 1;
+            c.strokeStyle = col; c.lineWidth = b.width * (b.weak ? 0.55 : 1);
+            c.beginPath(); c.moveTo(x, y); c.lineTo(tailX, tailY); c.stroke();
+            c.globalAlpha = 1;
         }
     }
 
     _player(c, w) {
         const baseX = this.tx(w.playerX), baseY = this.ty(PLAYER_Y);
         const moving = w.isMoving;
-        // 简单画 personCount 个小人。复用 core 的 PERSON_OFFSETS（与弹道发射点同源，避免错位）
-        for (let i = 0; i < w.state.personCount && i < PERSON_OFFSETS.length; i++) {
-            const px = baseX + PERSON_OFFSETS[i][0], py = baseY - PERSON_OFFSETS[i][1];
-            c.fillStyle = moving ? '#2a7d72' : '#3DE0C8';
-            this._roundRect(c, px - 10, py - 6, 20, 22, 5); c.fill();
-            c.beginPath(); c.arc(px, py - 10, 8, 0, Math.PI * 2); c.fill();
-        }
+        const col = moving ? '#2a7d72' : '#3DE0C8';
+        const colDark = moving ? '#1d5c54' : '#2bb3a0';   // 腿/暗部
+        // Count Masters 风一群小人：① 圆头+收窄身体+两条腿剪影(像人不像方块) ② 按屏幕 y 排序,
+        // 后画(更靠下=更近)的盖住前面→重叠遮挡出"人多"密度 ③ 每人相位错开的 sin 上下颠+跑动摆腿→一团此起彼伏=活的。
+        const layout = personLayout(w.state.personCount);
+        // 计算每个小人屏幕位置 + 个体相位,按 py 升序排(先画上/远的,后画下/近的盖住)
+        const dudes = layout.map((p, i) => {
+            const phase = i * 1.7;                          // 个体相位错开(质数感间隔),群体此起彼伏
+            const bob = Math.sin(this.t * 8 + phase) * 1.5 * p.scale;   // 上下颠
+            return { px: baseX + p.dx, py: baseY - p.dy + bob, s: p.scale, phase };
+        }).sort((a, b) => a.py - b.py);
+        for (const d of dudes) this._drawDude(c, d.px, d.py, d.s, col, colDark, moving, d.phase);
         // 移动中显式提示"火力弱"
         if (moving) {
             c.fillStyle = 'rgba(255,180,60,0.9)'; c.textAlign = 'center'; c.textBaseline = 'bottom';
             c.font = 'bold 22px sans-serif'; c.fillText('移动中·火力弱', baseX, baseY - 60);
         }
+    }
+
+    // 画单个小人(Count Masters 剪影)：两条腿(跑动时左右摆) + 收窄身体 + 圆头。纯色填充,简洁。
+    _drawDude(c, x, y, s, col, colDark, moving, phase) {
+        const swing = moving ? Math.sin(this.t * 14 + phase) * 4 * s : 0;   // 跑动摆腿
+        // 腿(两条,暗色,左右交替摆)
+        c.strokeStyle = colDark; c.lineWidth = 3 * s; c.lineCap = 'round';
+        c.beginPath();
+        c.moveTo(x, y + 2 * s); c.lineTo(x - 4 * s + swing, y + 12 * s);
+        c.moveTo(x, y + 2 * s); c.lineTo(x + 4 * s - swing, y + 12 * s);
+        c.stroke();
+        // 身体(上窄下宽的胶囊剪影)
+        c.fillStyle = col;
+        c.beginPath();
+        c.moveTo(x - 5 * s, y + 4 * s);
+        c.lineTo(x - 3.5 * s, y - 6 * s);
+        c.lineTo(x + 3.5 * s, y - 6 * s);
+        c.lineTo(x + 5 * s, y + 4 * s);
+        c.closePath(); c.fill();
+        // 圆头
+        c.beginPath(); c.arc(x, y - 10 * s, 5.5 * s, 0, Math.PI * 2); c.fill();
     }
 
     _hud(c, w) {
@@ -238,8 +299,8 @@ export class Renderer {
         c.fillStyle = '#3DE0C8'; c.font = 'bold 30px sans-serif'; c.textBaseline = 'top';
         c.fillText(`第 ${w.state.level} 关 / 5`, 44, 70);
         // 武器名（非数字）+ 人数，右上角
-        c.fillStyle = WEAPON_STATS[w.state.weaponLevel].color; c.textAlign = 'right'; c.font = 'bold 26px sans-serif';
-        c.fillText(`${WEAPON_NAMES[w.state.weaponLevel]} ×${w.state.personCount}`, 706, 70);
+        c.fillStyle = weaponStat(w.state.weaponLevel).color; c.textAlign = 'right'; c.font = 'bold 26px sans-serif';
+        c.fillText(`${weaponName(w.state.weaponLevel)} ×${w.state.personCount}`, 706, 70);
         c.fillStyle = '#9fb'; c.font = '18px sans-serif';
         c.fillText(`分 ${w.state.score}`, 706, 102);
     }

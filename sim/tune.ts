@@ -4,7 +4,7 @@
 // 用法：./sim/run.sh tune.ts
 import { GameWorld } from '../assets/scripts/core/world';
 import { LEVEL_DEFS } from '../assets/scripts/core/levels';
-import { makeLookaheadBot, SKILL_EXPERT } from './bots';
+import { makeStrategyBot, SKILL_EXPERT } from './bots';
 
 const DT = 1 / 60, MAX_SEC = 260, N = 40;
 const TARGET = { 1: 92, 2: 82, 3: 65, 4: 40, 5: 22 };  // 高手单关通关率目标(%)
@@ -16,7 +16,7 @@ function measure(ks: number[]) {
     const reached = [0, 0, 0, 0, 0, 0], cleared = [0, 0, 0, 0, 0, 0];
     for (let seed = 1; seed <= N; seed++) {
         const w = new GameWorld(); w.start(1, seed * 7919 + 13);
-        const bot = makeLookaheadBot(SKILL_EXPERT, seed * 7919 + 13); bot.reset?.();
+        const bot = makeStrategyBot(SKILL_EXPERT, seed * 7919 + 13); bot.reset?.();
         let reach = 1;
         for (let f = 0; f < MAX_SEC / DT && w.running; f++) {
             const ev = w.step(DT, { playerTargetX: bot.decide(w) });
