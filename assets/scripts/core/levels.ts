@@ -74,9 +74,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.BRUTE, bossHp: 120000,
         gateSeconds: { [GateType.WEAPON_UP]: 12, [GateType.PERSON_UP]: 10 },
         threat: [
-            { atSec: 0, spawnRate: 0.68, hpMul: 30 },
-            { atSec: 15, spawnRate: 0.92, hpMul: 30 },
-            { atSec: 30, spawnRate: 1.22, hpMul: 30 },
+            { atSec: 0, spawnRate: 0.68, hpMul: 22 },
+            { atSec: 15, spawnRate: 0.92, hpMul: 22 },
+            { atSec: 30, spawnRate: 1.22, hpMul: 22 },
         ],
     },
     // ── 第3关：42s。险过关——目标 HP 打到见底但能过。──
@@ -91,9 +91,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.MINI_BOSS, bossHp: 600000,
         gateSeconds: { [GateType.WEAPON_UP]: 20, [GateType.PERSON_UP]: 16 },
         threat: [
-            { atSec: 0, spawnRate: 1.19, hpMul: 90 },
-            { atSec: 20, spawnRate: 1.68, hpMul: 90 },
-            { atSec: 42, spawnRate: 2.28, hpMul: 90 },
+            { atSec: 0, spawnRate: 1.19, hpMul: 65 },
+            { atSec: 20, spawnRate: 1.68, hpMul: 65 },
+            { atSec: 42, spawnRate: 2.28, hpMul: 65 },
         ],
     },
     // ── 第4关：54s。【难度墙/skill gate】——第一排清不动+清不完，必死。──
@@ -104,9 +104,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.MINI_BOSS, bossHp: 3000000,
         gateSeconds: { [GateType.WEAPON_UP]: 22, [GateType.PERSON_UP]: 18 },
         threat: [
-            { atSec: 0, spawnRate: 1.26, hpMul: 300 },
-            { atSec: 26, spawnRate: 1.8, hpMul: 300 },
-            { atSec: 54, spawnRate: 2.42, hpMul: 300 },
+            { atSec: 0, spawnRate: 1.26, hpMul: 210 },
+            { atSec: 26, spawnRate: 1.8, hpMul: 210 },
+            { atSec: 54, spawnRate: 2.42, hpMul: 210 },
         ],
     },
     // ── 第5关：66s。终墙(中等偏上玩家在 L4 已死,本关仅占位/极限高手才到)。hpMul ×20。──
@@ -116,9 +116,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.BOSS, bossHp: 12000000,
         gateSeconds: { [GateType.WEAPON_UP]: 24, [GateType.PERSON_UP]: 20 },
         threat: [
-            { atSec: 0, spawnRate: 0.76, hpMul: 1000 },
-            { atSec: 30, spawnRate: 1.08, hpMul: 1000 },
-            { atSec: 66, spawnRate: 1.43, hpMul: 1000 },
+            { atSec: 0, spawnRate: 0.76, hpMul: 700 },
+            { atSec: 30, spawnRate: 1.08, hpMul: 700 },
+            { atSec: 66, spawnRate: 1.43, hpMul: 700 },
         ],
     },
 ];

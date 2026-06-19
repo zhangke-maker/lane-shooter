@@ -52,7 +52,6 @@ export function weaponName(level: number): string {
 
 // ---- 人数 ----
 // 加人翻倍无上限：1→2→4→8→16→32→64…（每次 ×2，与武器升级对称）。人数纯属战力(DPS)+视觉,无封顶。
-export const PERSON_BASE_RADIUS = 14;   // 单个小人基础半径(占位用,渲染按 scale 缩放)
 
 // 动态布局：Count Masters 式「人堆」——横向铺满泳道宽 + 奇偶排六边形错位 + 确定性抖动。
 // (调研结论：竖屏/底部/横向铺满/人挨人 场景,行填充优于圆形螺旋。)返回每个的 [dx, dy, scale]。

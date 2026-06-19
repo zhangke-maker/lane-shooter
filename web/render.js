@@ -16,6 +16,11 @@ const ENEMY_TEX = {
     grunt: 'enemy_grunt', runner: 'enemy_runner', brute: 'enemy_brute',
     mini_boss: 'enemy_miniboss', boss: 'enemy_boss',
 };
+// 怪类型 → 显示直径(px)。直接按类型定,Boss 明确比小兵大很多。
+// (旧 tier=log2(maxHp)/7 在数值×100 后全触顶=1、分级失效→Boss 和小兵差不多大,故改固定表。)
+const ENEMY_DIA = {
+    grunt: 230, runner: 200, brute: 330, mini_boss: 460, boss: 620,
+};
 // 武器档(0~5) → 门内武器图标 key（0手枪无门图标，门只显示可升到的1~5档）
 const WEAPON_TEX = [null, 'weapon_smg', 'weapon_rifle', 'weapon_mg', 'weapon_hmg', 'weapon_laser'];
 
@@ -265,7 +270,6 @@ export class Renderer {
         c.strokeRect(x + 0.5, 0, ww - 1, 1334);
         c.restore();
     }
-    // 注：掉血线(BASELINE_Y)不再绘制(用户要求隐藏)——判定仍生效,只是视觉不画。
 
     _gates(c, w) {
         for (const g of w.gates) {
@@ -329,15 +333,13 @@ export class Renderer {
         // 才能按真实视觉半宽 inset，让立绘边缘不越红框(core 猜尺寸会错位=之前的 bug)。
         const BOX_L = 393, BOX_R = 724;
         for (const e of ordered) {
-            // 视觉分级：怪越硬(maxHp 越高)→越大。强度一眼可辨(业界可读性标准)。
-            // tier 0~1：按 maxHp 对数分级（怪海里 hp 跨度大，用 log 压缩）
-            const tier = Math.max(0, Math.min(1, Math.log2(Math.max(1, e.maxHp)) / 7));  // hp 1~128 → 0~1
-            const dia = e.cfg.radius * (1 + tier * 0.8) * 2 * 3.2;   // 显示直径
+            // 显示直径按怪类型固定(Boss 明确大),Boss 再按血量比例微调(残血 Boss 也保持大)。
+            const dia = ENEMY_DIA[e.cfg.type] || 95;
             const visHalf = dia * 0.30;   // 立绘留白，身体实际视觉半宽≈直径×0.30
             const y = this.ty(e.y);
             // x 按真实视觉半宽 clamp 进红框，立绘边缘不越界
             const x = Math.max(BOX_L + visHalf, Math.min(BOX_R - visHalf, this.tx(e.x)));
-            const r = e.cfg.radius * (1 + tier * 0.8);
+            const r = dia / 2;
             // 行走蠕动动效(纯代码不画帧)：每只按 id 错开相位，叠加 摇摆+上下颠+倾斜，像一群活物往前涌。
             // 大怪(boss/miniboss)动得慢而沉，小怪动得快而碎。
             const img = this.tex[ENEMY_TEX[e.cfg.type]];
@@ -355,7 +357,7 @@ export class Renderer {
                 c.drawImage(img, -w2 / 2, -h2 / 2, w2, h2);
                 c.restore();
             } else {   // 立绘没加载完，回退色块
-                c.fillStyle = this._tierColor(e.cfg.type, tier);
+                c.fillStyle = this._tierColor(e.cfg.type, 1);
                 c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
             }
             // Boss 血条：先收集，循环后统一画在最上层(身体参与遮挡但血条始终可见)。
@@ -419,9 +421,8 @@ export class Renderer {
         const moving = w.isMoving;
         // 一群小人(Count Masters 风)：① 按屏幕 y 排序,后画(更靠下=更近)的盖住前面→重叠出"人多"密度
         // ② 每人相位错开的 sin 上下颠→一团此起彼伏=活的 ③ idle 浮动/移动摆动全代码补间(美术只给静态立绘)。
-        // 人数动态缩放：1 人时最大(170)，人多时缩小(底 90)，避免一堆大立绘糊成一片。
         const cnt = w.state.personCount;
-        // 主角小队单体尺寸：固定(不缩),人多靠"人堆铺开"表现。单体 78px,人挨人能看清又够大。
+        // 主角小队单体尺寸：固定(不缩),人多靠"人堆铺开"表现(personLayout 横向铺开)。单体 78px。
         const groupDia = 78;
         const layout = personLayout(cnt);
         const dudes = layout.map((p, i) => {
