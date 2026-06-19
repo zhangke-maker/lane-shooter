@@ -66,8 +66,9 @@ const MOVE_FIRE_PENALTY = 0.5;
 
 
 // 怪海密度倍率：出怪量 ×N、单只血 ÷N（总威胁守恒——第一排总血量不变）。N 越大越"满屏怪海"。
-// 24：在原 8 基础上把小怪数量 ×3 填满右路(用户要求)，单只更薄,总血量仍按 threat hpMul 设定不变。
-const HORDE_DENSITY = 24;
+// 72：填满右路 + 数量足够多显得密(用户要求)。单只更薄,总血量仍按 threat hpMul 设定不变。
+// ⚠️ base.hp 基数小时 ÷N 后被 round/地板(max(1))扭曲、破坏守恒 → 待"基础数值×100"修复(见 spec)。
+const HORDE_DENSITY = 72;
 const VISUAL_BULLET_CAP = 24;   // 每次发弹的最大子弹数(纯视觉)——人数无上限,封顶防超多人时子弹爆炸
 
 // 「第一排」带宽（px）：右路火力只打最靠下这一带内的怪（约一个怪身高），逐排往上推平。
@@ -183,9 +184,13 @@ export class GameWorld {
     private _spawnPreseed(type: EnemyType, hpMul: number, y: number) {
         const base = ENEMY_BASE[type];
         const cfg: EnemyConfig = { ...base, hp: Math.max(1, Math.round(base.hp * hpMul)) };
+        // 生成范围按怪视觉半宽(radius×1.55) inset 到红框[18,349]内，新怪一出来立绘就不越界。
+        // 横向分布纯视觉，不参与占道命中判定(命中看 y/第一排)，不影响难度/bot。
+        const visR = base.radius * 1.55;
+        const lo = 18 + visR, hi = 349 - visR;
         this.enemies.push({
             id: this._nextId++,
-            x: 20 + this._rng.next() * (LANE_RIGHT_X - 20),
+            x: lo + this._rng.next() * Math.max(1, hi - lo),
             y,
             cfg, hp: cfg.hp, maxHp: cfg.hp, isWaveBoss: false,
         });
@@ -353,7 +358,7 @@ export class GameWorld {
         const cfg: EnemyConfig = { ...base, hp };
         this.enemies.push({
             id: this._nextId++,
-            x: LANE_RIGHT_X - 0.5 * ENEMY_SPAWN_JITTER,
+            x: LANE_RIGHT_X,   // Boss 居中右路
             y: SCREEN_TOP + cfg.radius + 10,
             cfg, hp, maxHp: hp, isWaveBoss: true,
         });
@@ -375,6 +380,7 @@ export class GameWorld {
     }
 
     private _moveEnemies(dt: number, ev: WorldEvent[]) {
+        this._separateEnemies(dt);   // 横向分离(防穿模，纯视觉，不动 y/命中)
         const survivors: Enemy[] = [];
         let bossLeaked = false;
         for (const e of this.enemies) {
@@ -397,6 +403,38 @@ export class GameWorld {
         this.enemies = survivors;
         // Boss 漏掉过关：放在循环后,且仅当玩家没被 80% 扣血扣死时才算过关(死了就是 game over)。
         if (bossLeaked && this.running && !this.gameOver) this._onLevelComplete(ev);
+    }
+
+    // 横向分离(防穿模)：简化 Reynolds separation——只保留 separation(无 alignment/cohesion)、
+    // 只调 x(纯横向、不动 y/命中)、O(n²) 朴素遍历(怪量级几十~百足够,无需 spatial grid)。
+    // 确定性函数(只依赖怪位置,无随机)→ 不破坏 replay；e.x 不参与占道命中→ 不影响难度/bot。
+    // 允许适度重叠、只防完全堆叠(业界共识:Vampire Survivors 等也允许部分重叠)。
+    private _separateEnemies(dt: number) {
+        const n = this.enemies.length;
+        if (n < 2) return;
+        const PUSH = 140;          // 推力强度(px/s)，大怪需更大位移才分得开
+        // 粗夹在右路逻辑范围 world x∈[18,349]，防怪飘太远；精确视觉边界由 render 层按真实显示宽 clamp(单一真相源)。
+        const LANE_L = 18, LANE_R = 349;
+        // 分离间距按视觉半径算(radius×1.55)，匹配渲染放大，避免大怪因绝对尺寸大而仍重叠。
+        const visR = (e) => e.cfg.radius * 1.55;
+        for (let i = 0; i < n; i++) {
+            const a = this.enemies[i];
+            const ra = visR(a);
+            let dx = 0;
+            for (let j = 0; j < n; j++) {
+                if (i === j) continue;
+                const b = this.enemies[j];
+                const want = (ra + visR(b)) * 0.85;   // 期望间距=两怪视觉半径和(0.85 允许轻微重叠，业界共识)
+                if (Math.abs(b.y - a.y) > want) continue;   // y 差超过期望间距=非邻居(剪枝)
+                const d = a.x - b.x;
+                const ad = Math.abs(d);
+                if (ad < want && ad > 0.001) dx += (d / ad) * (want - ad);   // 越近推越狠(类 1/r)
+                else if (ad <= 0.001) dx += (i < j ? 1 : -1) * want;          // 完全重合:按序错开
+            }
+            a.x += Math.max(-PUSH * dt, Math.min(PUSH * dt, dx * dt));        // 限幅,平滑
+            // 粗夹在右路逻辑范围(精确边界由 render 层按真实显示宽 clamp，单一真相源)
+            if (a.x < LANE_L) a.x = LANE_L; else if (a.x > LANE_R) a.x = LANE_R;
+        }
     }
 
     private _slideGates(dt: number) {

@@ -50,7 +50,7 @@ export const LEVEL_DEFS: LevelDef[] = [
         levelIndex: 1, durationSec: 26,
         enemyPool: [EnemyType.GRUNT],
         bossType: EnemyType.BRUTE, bossHp: 120,
-        hordeDensity: 8,   // L1 怪极脆,用 8(非默认24)避开血量地板破坏守恒导致的难度虚高,恢复加密度前难度
+        hordeDensity: 24,   // L1 怪极脆,用低值(原8)避开血量地板破坏守恒;随全局×3同步到24保持原比例
         // 教学关：给~5秒抓首把武器(首道具便宜)，之后怪海迅速压上——逼"刷 vs 守"取舍，不能无脑刷满。
         // 道具耗时加大(A+C)：刷满要冒漏怪风险且更久，治"前期轻松刷满质变碾压"。
         gateSeconds: { [GateType.WEAPON_UP]: 7, [GateType.PERSON_UP]: 6 },
