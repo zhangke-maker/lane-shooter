@@ -170,11 +170,13 @@ export class GameWorld {
         if (this.state.level === 1 && this._def) {
             const hpMul0 = this._def.threat[0].hpMul / (this._def.hordeDensity ?? HORDE_DENSITY);
             const type = this._def.enemyPool[0];
-            // 怪海从掉血线(BASELINE_Y)一直铺到屏顶 → 开局就铺满上方~2/3、压到主角小队头顶(对峙感)。
+            // 怪海铺在[泳道一半 → 屏顶]：开局上半屏铺满(对峙感)，泳道下半留缓冲 → 起步不掉血，
+            // 怪要走一段才压到掉血线(BASELINE_Y)。底排对齐到泳道中点而非掉血线(原来贴线=一出来就扣血)。
+            const laneMid = (SCREEN_TOP + BASELINE_Y) / 2;
             const N = 40;
             for (let i = 0; i < N; i++) {
                 const t = i / (N - 1);
-                const y = BASELINE_Y + (SCREEN_TOP - BASELINE_Y) * t + (this._rng.next() - 0.5) * 40;
+                const y = laneMid + (SCREEN_TOP - laneMid) * t + (this._rng.next() - 0.5) * 40;
                 this._spawnPreseed(type, hpMul0, y);
             }
         }
