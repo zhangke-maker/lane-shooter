@@ -2,7 +2,7 @@
 // 难度达标 = 通关率随机种子下稳定逐关下降(前期高、第4-5关<5%)，而非看运气。
 // 用法：./sim/run.sh winrate.ts [局数N]
 import { GameWorld } from '../assets/scripts/core/world';
-import { makeLookaheadBot, SKILL_NOVICE, SKILL_AVERAGE, SKILL_EXPERT } from './bots';
+import { makeStrategyBot, SKILL_NOVICE, SKILL_AVERAGE, SKILL_EXPERT } from './bots';
 import type { Skill } from './bots';
 
 const N = parseInt(process.argv[2] || '40', 10);  // 每档每关跑多少局
@@ -11,7 +11,7 @@ const DT = 1 / 60, MAX_SEC = 260;
 // 跑一条命，返回到达的最高关 + 是否通关全5关
 function runLife(skill: Skill, seed: number): { reached: number; won: boolean } {
     const w = new GameWorld(); w.start(1, seed);
-    const bot = makeLookaheadBot(skill, seed); bot.reset?.();
+    const bot = makeStrategyBot(skill, seed); bot.reset?.();
     let reached = 1;
     for (let f = 0; f < MAX_SEC / DT && w.running; f++) {
         const ev = w.step(DT, { playerTargetX: bot.decide(w) });

@@ -1,19 +1,20 @@
 // 回放：跑前瞻 bot 一条命，逐秒文字时间线，验证 bot 行为是否像真人
 // 用法：./sim/run.sh replay.ts [seed]
 import { GameWorld } from '../assets/scripts/core/world';
-import { WEAPON_NAMES } from '../assets/scripts/core/types';
-import { makeLookaheadBot, SKILL_EXPERT } from './bots';
+import { weaponName } from '../assets/scripts/core/types';
+import { makeStrategyBot, SKILL_EXPERT } from './bots';
 
 const seed = parseInt(process.argv[2] || '1', 10);
 const w = new GameWorld(); w.start(1, seed);
-const bot = makeLookaheadBot(SKILL_EXPERT); bot.reset?.();
+const bot = makeStrategyBot(SKILL_EXPERT); bot.reset?.();
 const dt = 1 / 60;
 let t = 0, curLv = 1, lastLane = '', leftFrames = 0, total = 0, switches = 0;
 
-function bar(hp: number) { const n = Math.round(hp / 5); return '█'.repeat(Math.max(0, n)) + '░'.repeat(Math.max(0, 20 - n)); }
+// 20 格血条:按 maxHp 比例(不硬编码刻度,数值×100 后仍正确)。
+function bar(hp: number) { const n = Math.round(hp / w.state.maxHp * 20); return '█'.repeat(Math.max(0, Math.min(20, n))) + '░'.repeat(Math.max(0, 20 - n)); }
 function log(note: string) {
     const lane = w.playerX < -50 ? '左🔧' : '右⚔️';
-    console.log(`${t.toFixed(1).padStart(5)} | ${lane} | ${bar(w.state.hp)} ${String(Math.ceil(w.state.hp)).padStart(3)} | ${WEAPON_NAMES[w.state.weaponLevel].padEnd(3)}×${w.state.personCount} | ${note}`);
+    console.log(`${t.toFixed(1).padStart(5)} | ${lane} | ${bar(w.state.hp)} ${String(Math.ceil(w.state.hp)).padStart(3)} | ${weaponName(w.state.weaponLevel).padEnd(3)}×${w.state.personCount} | ${note}`);
 }
 
 console.log(`=== 前瞻 bot 回放 (seed=${seed}, EXPERT) ===`);
@@ -25,7 +26,7 @@ for (let f = 0; f < 220 / dt && w.running; f++) {
     const lane = w.playerX < -50 ? 'L' : 'R';
     if (lane !== lastLane) { if (lastLane) switches++; lastLane = lane; }
     for (const e of ev) {
-        if (e.kind === 'weapon_up') log(`✦武器→${WEAPON_NAMES[e.level]}`);
+        if (e.kind === 'weapon_up') log(`✦武器→${weaponName(e.level)}`);
         else if (e.kind === 'person_up') log(`✦加人→${e.count}`);
         else if (e.kind === 'level_clear') log(`🎉第${e.level}关通关`);
         else if (e.kind === 'level_start') { curLv = e.level; }

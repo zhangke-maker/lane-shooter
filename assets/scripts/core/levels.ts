@@ -1,6 +1,6 @@
 // 关卡配置 —— 难度模型：固定难度墙 + 每局随机形态（破唯一最优解）
-// 威胁曲线 Threat(关卡,t) 按绝对时间持续加压、不等人；怪血另叠乘 world._dpsChase 抗成长通胀（不平趟）
-// 零 cc 依赖。详见记忆 lane-shooter-difficulty-design（反解法/精确容错整套已作废，勿复活）
+// 威胁曲线 Threat(关卡,t)：怪血/出怪量按【固定时间线】递增，**不挂玩家DPS**——怪自顾自变强，
+// 玩家必须靠升级追上(裸装活不过第1关)。零 cc 依赖。详见记忆 lane-shooter-difficulty-design
 import { EnemyType, GateType } from './types';
 
 // 威胁曲线关键帧：在 atSec 时刻，潮水强度为 intensity
@@ -18,7 +18,9 @@ export interface LevelDef {
     enemyPool: EnemyType[];       // 本关潮水怪种类（按 hpMul 缩放）
     bossType: EnemyType;          // 关底 Boss（durationSec 时出现，杀掉=通关）
     bossHp: number;               // Boss 绝对血量（反算）
-    gateSeconds: Record<GateType, number>;  // 道具击破秒数（×当前DPS=血量，保证可中断）
+    gateSeconds: Record<GateType, number>;  // 道具打穿需多少秒（满火力恒定时长，与DPS无关）
+    hordeDensity?: number;        // 怪海密度(出怪量×N、单只血÷N)。默认 24(填满右路)；
+                                  // L1 怪极脆,÷24 后单只血触底 Math.max(1,...) 破坏守恒→难度虚高3×,故 L1 单独用 8。
 }
 
 // 在时刻 t 插值威胁曲线
@@ -43,79 +45,89 @@ export function threatAt(def: LevelDef, t: number): { spawnRate: number; hpMul: 
 // ⚠️ 连续闯关：一条命从第1关打到第5关，能力跨关累积，不能选关，死了回第1关。
 // 难度上限固定递增、威胁形态每局随机；通关率前3关高、第4-5关刷掉绝大多数。
 export const LEVEL_DEFS: LevelDef[] = [
-    // ── 第1关：教学关(32s)。手枪×1 入。加长+首道具便宜，保底让玩家进L2前刷到1次升级
-    // (实测旧22s+贵道具→近半人裸手枪进L2=L2墙根因)。weapon_up 仅5s打穿，鼓励早去左路学双路取舍 ──
+    // ── 第1关：教学关(26s)。裸装手枪入。开局怪海少(给刷首把武器的活路)→末段加压逼升级 ──
     {
         levelIndex: 1, durationSec: 26,
         enemyPool: [EnemyType.GRUNT],
-        bossType: EnemyType.BRUTE, bossHp: 40,
-        gateSeconds: { [GateType.WEAPON_UP]: 6, [GateType.PERSON_UP]: 5, [GateType.HEAL]: 4 },
+        bossType: EnemyType.BRUTE, bossHp: 12000,
+        hordeDensity: 24,   // L1 用低密度;base.hp 已×100,÷24 后无取整失真,守恒成立。
+        // 教学关：给~5秒抓首把武器(首道具便宜)，之后怪海迅速压上——逼"刷 vs 守"取舍，不能无脑刷满。
+        // 道具耗时加大(A+C)：刷满要冒漏怪风险且更久，治"前期轻松刷满质变碾压"。
+        gateSeconds: { [GateType.WEAPON_UP]: 7, [GateType.PERSON_UP]: 6 },
+        // 第1关按【裸装手枪】基准:开局怪海给刷首把武器的活路,末段加压逼升级。
+        // 怪海/秒 ∝ spawnRate×baseHp(grunt 500)×hpMul。hpMul 实玩定稿为 2(关内拍平)。
+        // 配合开局预置怪在半屏(world._beginLevel),堵"开局无脑跑去长时间刷道具"的投机策略——一上来就得先守右路打怪。
         threat: [
-            { atSec: 0,  spawnRate: 0.56, hpMul: 1.02 },
-            { atSec: 14, spawnRate: 0.95, hpMul: 1.42 },
-            { atSec: 26, spawnRate: 1.37, hpMul: 1.86 },
+            { atSec: 0, spawnRate: 0.30, hpMul: 2 },
+            { atSec: 8, spawnRate: 0.55, hpMul: 2 },
+            { atSec: 26, spawnRate: 0.90, hpMul: 2 },
         ],
     },
-    // ── 第2关：30s。补课/喘息关——玩家刚过L1 boss、已有升级，威胁温和(spawnRate低)让其稳固。
-    // 道具便宜(weapon 6s)继续快速升级。单关通过~78%(目标)。 ──
+    // ── 第2关：30s。轻度加压(原零难度)。怪血 ×2(原≈6.6→13)：微压力但不卡刷道具节奏。──
+    // ×3.5 实测过头(L2 玩家 DPS 还在冲锋枪级,加压太狠→没空刷→DPS 卡死→清不动堆死,同 L3×8 翻车机制)。
+    // L2 玩家 DPS 起步低,加压容忍度远低于 L3,只需消除"零难度"不需要很难。
+    // 注意全局耦合：L2 加压会挤占刷道具时间→进 L3+ 的 DPS 下移→L3-L5 难度需跟着下调匹配(本版 L3-L5 已下调)。
     {
         levelIndex: 2, durationSec: 30,
         enemyPool: [EnemyType.GRUNT, EnemyType.RUNNER],
-        bossType: EnemyType.BRUTE, bossHp: 90,
-        gateSeconds: { [GateType.WEAPON_UP]: 6, [GateType.PERSON_UP]: 5, [GateType.HEAL]: 5 },
+        bossType: EnemyType.BRUTE, bossHp: 120000,
+        gateSeconds: { [GateType.WEAPON_UP]: 12, [GateType.PERSON_UP]: 10 },
         threat: [
-            { atSec: 0,  spawnRate: 0.40, hpMul: 0.45 },
-            { atSec: 15, spawnRate: 0.55, hpMul: 0.60 },
-            { atSec: 30, spawnRate: 0.72, hpMul: 0.78 },
+            { atSec: 0, spawnRate: 0.68, hpMul: 17 },
+            { atSec: 15, spawnRate: 0.92, hpMul: 17 },
+            { atSec: 30, spawnRate: 1.22, hpMul: 17 },
         ],
     },
-    // ── 第3关：42s。第一道真墙(单关~65%)。威胁陡升+怪血靠 _dpsChase 叠乘抗通胀(强者怪更硬→仍掉血) ──
+    // ── 第3关：42s。险过关——目标 HP 打到见底但能过。──
+    // 关键机制(实测修正)：DPS 只打"第一排"(最靠下80px带)，漏不漏怪取决于"清第一排耗时 vs 怪落地耗时"，
+    // 不取决于全屏总血量。第一排血 ∝ spawnRate×baseHp×hpMul(与 HORDE_DENSITY 无关)。要逼出 HP 损耗，
+    // 必须让"清第一排耗时"逼近"落地耗时(~7s)"——即第一排血量逼近 DPS×7。
+    // 实测迭代：×4.5 无损 / ×8 过头(怪海压力大到玩家没空刷道具→DPS卡冲锋枪→恶性循环死) → 取中 ×5.5(≈65)。
+    // 怪速不动(L1 已是最难,全局提速会破坏 L1)。
     {
         levelIndex: 3, durationSec: 42,
         enemyPool: [EnemyType.GRUNT, EnemyType.RUNNER],
-        bossType: EnemyType.MINI_BOSS, bossHp: 200,
-        gateSeconds: { [GateType.WEAPON_UP]: 10, [GateType.PERSON_UP]: 8, [GateType.HEAL]: 6 },
+        bossType: EnemyType.MINI_BOSS, bossHp: 600000,
+        gateSeconds: { [GateType.WEAPON_UP]: 20, [GateType.PERSON_UP]: 16 },
         threat: [
-            { atSec: 0,  spawnRate: 0.66, hpMul: 0.71 },
-            { atSec: 20, spawnRate: 0.93, hpMul: 0.98 },
-            { atSec: 42, spawnRate: 1.27, hpMul: 1.33 },
+            { atSec: 0, spawnRate: 1.19, hpMul: 50 },
+            { atSec: 20, spawnRate: 1.68, hpMul: 50 },
+            { atSec: 42, spawnRate: 2.28, hpMul: 50 },
         ],
     },
-    // ── 第4关：54s。开始刷人(全程<5%)。出怪量加压，怪血靠 _dpsChase 追玩家 ──
+    // ── 第4关：54s。【难度墙/skill gate】——第一排清不动+清不完，必死。──
+    // hpMul ×14(原≈9.4→132)：第一排血量超过 DPS×落地耗时 → 清第一排比怪落地慢 → 持续漏怪 → 必死。
     {
         levelIndex: 4, durationSec: 54,
         enemyPool: [EnemyType.RUNNER, EnemyType.BRUTE],
-        bossType: EnemyType.MINI_BOSS, bossHp: 340,
-        gateSeconds: { [GateType.WEAPON_UP]: 11, [GateType.PERSON_UP]: 9, [GateType.HEAL]: 6 },
+        bossType: EnemyType.MINI_BOSS, bossHp: 3000000,
+        gateSeconds: { [GateType.WEAPON_UP]: 22, [GateType.PERSON_UP]: 18 },
         threat: [
-            { atSec: 0,  spawnRate: 0.71, hpMul: 0.66 },
-            { atSec: 26, spawnRate: 1.01, hpMul: 0.88 },
-            { atSec: 54, spawnRate: 1.36, hpMul: 1.14 },
+            { atSec: 0, spawnRate: 1.26, hpMul: 130 },
+            { atSec: 26, spawnRate: 1.8, hpMul: 130 },
+            { atSec: 54, spawnRate: 2.42, hpMul: 130 },
         ],
     },
-    // ── 第5关：66s。终关高压墙，绝大多数死这(全程<5%) ──
+    // ── 第5关：66s。终墙(中等偏上玩家在 L4 已死,本关仅占位/极限高手才到)。hpMul ×20。──
     {
         levelIndex: 5, durationSec: 66,
         enemyPool: [EnemyType.RUNNER, EnemyType.BRUTE],
-        bossType: EnemyType.BOSS, bossHp: 520,
-        gateSeconds: { [GateType.WEAPON_UP]: 12, [GateType.PERSON_UP]: 10, [GateType.HEAL]: 7 },
+        bossType: EnemyType.BOSS, bossHp: 12000000,
+        gateSeconds: { [GateType.WEAPON_UP]: 24, [GateType.PERSON_UP]: 20 },
         threat: [
-            { atSec: 0,  spawnRate: 1.00, hpMul: 0.85 },
-            { atSec: 30, spawnRate: 1.42, hpMul: 1.18 },
-            { atSec: 66, spawnRate: 1.90, hpMul: 1.55 },
+            { atSec: 0, spawnRate: 0.76, hpMul: 400 },
+            { atSec: 30, spawnRate: 1.08, hpMul: 400 },
+            { atSec: 66, spawnRate: 1.43, hpMul: 400 },
         ],
     },
 ];
 
 // 道具序列（循环）—— 决定传送带补入顺序
-// 补血低频低量（潮水为主要伤害源）：8 个里仅 2 个补血
-export const GATE_SEQUENCE: { type: GateType; label: string; healAmount?: number }[] = [
+// 无补血（血是纯消耗资源、只减不加）；只有攻击道具：武器升级 + 加人。
+// 道具升级总量是稀缺资源，需玩家横跨 5 关精打细算分配（不能轻易刷满）。
+export const GATE_SEQUENCE: { type: GateType; label: string }[] = [
     { type: GateType.WEAPON_UP, label: '武器升级' },
     { type: GateType.PERSON_UP, label: '+1 人' },
     { type: GateType.WEAPON_UP, label: '武器升级' },
-    { type: GateType.HEAL, label: '+30 血', healAmount: 30 },
-    { type: GateType.PERSON_UP, label: '+1 人' },
-    { type: GateType.WEAPON_UP, label: '武器升级' },
-    { type: GateType.HEAL, label: '+30 血', healAmount: 30 },
     { type: GateType.PERSON_UP, label: '+1 人' },
 ];

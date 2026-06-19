@@ -29,5 +29,18 @@ web/lib/
 # 内部开发交接/设计文档 + 临时调试脚本（本地保留，不公开到开源仓库）
 HANDOFF.md
 spec.md
+ART-ASSETS-WORKBOOK.md
+GPT-IMAGE-BRIEF.md
+DIFFICULTY-BASELINE.md
 sim/diag*.ts
 
+
+# 第三方 Cocos 扩展(cocos-mcp-server,本地工具,不进 git)
+/extensions/cocos-mcp-server/
+# MCP 插件本地配置(端口/工具开关,机器本地状态,不进 git)
+/settings/mcp-server.json
+/settings/tool-manager.json
+
+# Playwright 截图产物（node_modules 已在上面忽略）
+/web/*.png
+!/web/favicon.ico

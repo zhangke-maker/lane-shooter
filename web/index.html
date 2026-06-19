@@ -40,7 +40,7 @@
 
 <script type="module">
 import { GameWorld } from './lib/world.js';
-import { makeLookaheadBot, SKILL_EXPERT } from './lib/bots.js';
+import { makeStrategyBot, SKILL_EXPERT } from './lib/bots.js';
 import { Renderer } from './render.js';
 import { PLAYER_MIN_X, PLAYER_MAX_X } from './lib/types.js';
 
@@ -58,12 +58,15 @@ const overSub = document.getElementById('overSub');
 let world, bot;
 let watchAI = false;     // true=看 AI 自动玩；false=真人手玩
 let manualX = 0;         // 真人目标 X
-let acc = 0;
+// 录制：存种子 + 每帧真人输入，game over 后导出 JSON 供 node 精确重放分析
+let recSeed = 1, recInputs = [];
 
 function reset() {
-  world = new GameWorld(); world.start(1, (Date.now() & 0xffff) || 1);
-  bot = makeLookaheadBot(SKILL_EXPERT, 12345); bot.reset?.();
-  manualX = world.playerX; acc = 0;
+  recSeed = (Date.now() & 0xffff) || 1;
+  world = new GameWorld(); world.start(1, recSeed);
+  bot = makeStrategyBot(SKILL_EXPERT, 12345); bot.reset?.();
+  manualX = world.playerX;
+  recInputs = [];
   overEl.classList.remove('show');
   renderer.reset?.();
 }
@@ -71,9 +74,20 @@ function reset() {
 function stepOnce() {
   if (!world.running) return;
   const targetX = watchAI ? bot.decide(world) : manualX;
+  if (!watchAI) recInputs.push(targetX);   // 录真人每帧输入（必须是 step 用的原始浮点值，不能 round——sim 对亚像素位置敏感：playerX<0 的占道判定在 x≈0 处翻转，±0.5px 误差会让录像重放完全偏离实况）
   const events = world.step(1 / 60, { playerTargetX: targetX });
   renderer.consume(events);   // 把事件喂给渲染层做 juice（闪光/震屏/升级弹字）
-  if (!world.running) showOver();
+  if (!world.running) { if (!watchAI) downloadRecording(); showOver(); }
+}
+
+// 导出本局录像：{seed, inputs[]} → node sim/replay-human.ts 精确重放分析
+function downloadRecording() {
+  if (recInputs.length < 30) return;   // 太短不存
+  const data = JSON.stringify({ seed: recSeed, inputs: recInputs });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  a.download = `lane-rec-${recSeed}.json`;
+  a.click();
 }
 
 function showOver() {
@@ -89,10 +103,18 @@ function showOver() {
   overEl.classList.add('show');
 }
 
-function loop() {
-  // 真人模式实时 1×；看 AI 时也 1× 看手感（要快进可后续加）
-  acc += 1;
-  while (acc >= 1) { stepOnce(); acc -= 1; }
+// 固定时间步长（fixed timestep）：游戏按【真实时间】每 1/60 秒 step 一次，
+// 与显示器刷新率无关——否则高刷屏(100/120/144Hz)游戏会跑得快 1.67~2.4 倍，速度/难度因设备而异，
+// 且录像无法精确重放（已实测踩坑：100Hz 屏录像在 node 60fps 重放结果不一致）。
+const STEP = 1 / 60;
+let lastT = 0, accTime = 0;
+function loop(now) {
+  if (!lastT) lastT = now;
+  let frame = (now - lastT) / 1000;
+  lastT = now;
+  if (frame > 0.25) frame = 0.25;   // 卡顿/切后台后不补一大堆帧（防爆炸）
+  accTime += frame;
+  while (accTime >= STEP) { stepOnce(); accTime -= STEP; }
   renderer.draw(world);
   requestAnimationFrame(loop);
 }
@@ -116,7 +138,7 @@ document.getElementById('watch').onclick = e => {
 document.getElementById('again').onclick = reset;
 
 reset();
-loop();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>

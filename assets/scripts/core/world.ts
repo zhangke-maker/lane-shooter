@@ -5,7 +5,7 @@
 // 所有实体是 plain data，渲染层不拥有状态，只镜像
 import {
     makeInitialState, computeDps,
-    WEAPON_STATS, WeaponLevel, MAX_WEAPON_LEVEL, MAX_PERSON, PERSON_OFFSETS,
+    weaponStat, personLayout,
     GateType, EnemyType, ENEMY_BASE,
     LANE_LEFT_X, LANE_RIGHT_X, PLAYER_Y, PLAYER_MIN_X, PLAYER_MAX_X,
     SHOOT_INTERVAL, BULLET_SPEED, SCREEN_TOP, BASELINE_Y, ENEMY_SPAWN_JITTER,
@@ -16,7 +16,9 @@ import type { LevelDef } from './levels';
 
 // PLAYER_MOVE_SPEED 不在 types 里（渲染相关），这里本地定义供模拟用
 // （移动是逻辑也是手感，归核心）
-export interface Bullet { id: number; x: number; y: number; damage: number; width: number; weak: boolean; }
+// 纯视觉子弹（不参与伤害判定，伤害走"占领即全体输出"）。tx/ty = 飞向的目标点（某只怪/道具门），
+// 让视觉与"全体输出"判定一致——看起来子弹确实飞到怪身上（自动弹幕，零瞄准）。
+export interface Bullet { id: number; x: number; y: number; tx: number; ty: number; width: number; weak: boolean; }
 export interface Enemy {
     id: number; x: number; y: number;
     cfg: EnemyConfig; hp: number; maxHp: number;
@@ -24,25 +26,24 @@ export interface Enemy {
 }
 export interface Gate {
     id: number; x: number; y: number;
-    type: GateType; hp: number; maxHp: number; label: string; healAmount?: number;
-    slot: number;        // 0-3 传送带槽位；-1 = 右路自由掉落（Boss补血）
+    type: GateType; label: string;
+    breakSecs: number;   // 满火力打穿需多少秒（固定，不随DPS变——修"越升级道具越快"的bug）
+    progress: number;    // 已打进度 0~1（每帧 += dt/breakSecs，与DPS无关→打穿恒定 breakSecs 秒）
+    slot: number;        // 0-3 传送带槽位（0 = 玩家正在打的活跃道具）
     targetY: number;     // 下移动画目标
-    freeDrop: boolean;
 }
 
 // 槽位 Y（从下到上）
 const SLOT_Y = [-160, 60, 280, 500];
 const SLIDE_SPEED = 400;
-const GATE_HIT_W = 140, GATE_HIT_H = 60;
 
 // 世界事件（渲染/UI/音效消费）
 export type WorldEvent =
-    | { kind: 'enemy_killed'; cfg: EnemyConfig }
+    | { kind: 'enemy_killed'; cfg: EnemyConfig; x: number; y: number }
     | { kind: 'enemy_reached'; damage: number }
     | { kind: 'gate_cleared'; type: GateType; label: string }
     | { kind: 'weapon_up'; level: number }
     | { kind: 'person_up'; count: number }
-    | { kind: 'heal'; amount: number }
     | { kind: 'player_hit'; hp: number; maxHp: number }
     | { kind: 'score'; score: number }
     | { kind: 'level_clear'; level: number }
@@ -63,13 +64,15 @@ const PLAYER_MOVE_SPEED = 600;
 // 具体折扣值由 bot 通关率验证调，0.5 = 移动中半火力。
 const MOVE_FIRE_PENALTY = 0.5;
 
-// 抗成长通胀：怪血随玩家当前 DPS 部分追赶（治"先难后平趟"，用户拍板 A 方案）。
-// 玩家 DPS 指数涨(~200×)，纯按时间的固定威胁会被碾平→后关净回血。让怪血挂 DPS：
-//   chase = (curDps / BASE_DPS) ^ CHASE_EXP，curDps 越高怪越硬，玩家仍掉血。
-// BASE_DPS = 初始手枪×1 的 DPS（此基线下 chase=1，不影响前期）；
-// CHASE_EXP<1 让追赶【次线性】——升级仍有净收益(不抵消投资=保升级爽感)，但不再平趟。
-const CHASE_BASE_DPS = 8.33;   // 手枪×1 = 1×1×(1/0.12)
-const CHASE_EXP = 0.72;        // 次线性指数，bot 验证调
+
+// 怪海密度倍率：出怪量 ×N、单只血 ÷N（总威胁守恒——第一排总血量不变）。N 越大越"满屏怪海"。
+// 36：怪数量适中(用户反馈 72 太密,减半)。总威胁守恒(数量÷2、单只血×2),难度不变、只是怪变少变厚。
+// base.hp 已 ×100，÷N 后无取整失真，守恒成立。
+const HORDE_DENSITY = 36;
+const VISUAL_BULLET_CAP = 24;   // 每次发弹的最大子弹数(纯视觉)——人数无上限,封顶防超多人时子弹爆炸
+
+// 「第一排」带宽（px）：右路火力只打最靠下这一带内的怪（约一个怪身高），逐排往上推平。
+const FRONT_ROW_BAND = 80;
 
 // 种子化伪随机（mulberry32）—— 确定性可复现，是通关率统计/无头模拟的前提。
 // 禁用 Math.random（不可复现，且 node sim 环境也禁用）。
@@ -113,7 +116,7 @@ export class GameWorld {
     start(level = 1, seed = 1) {
         this._rng = new Rng(seed);
         this.state = makeInitialState();
-        this.playerX = 0;
+        this.playerX = LANE_RIGHT_X;   // 开局停在右路：逼玩家先守怪(配合 L1 开局预置半屏怪),不能一上来就跑去刷道具
         this.bullets = []; this.enemies = []; this.gates = [];
         this.running = true; this.gameOver = false; this.won = false;
         this._beginLevel(level);
@@ -152,9 +155,47 @@ export class GameWorld {
         this._spawnAccum = 0;
         this._burstTimer = 0;
         this._burstMul = 1;
-        // 初始化传送带 4 槽
-        this.gates = [];
-        for (let i = 0; i < 4; i++) this._fillSlot(i);
+        // 传送带跨关保留：只在首关(gates 为空)初始化 4 槽；过关时保留当前道具的当前进度，不重置
+        // （否则"打了一半的道具"会过关后变满血新道具——已修的 bug）。
+        if (this.gates.length === 0) {
+            for (let i = 0; i < 4; i++) this._fillSlot(i);
+        } else {
+            // 跨关保留的门:breakSecs 刷新为新关值(否则残留门带着旧关耗时,破坏每关 gateSeconds 递增设计)。
+            for (const g of this.gates) g.breakSecs = this._def!.gateSeconds[g.type];
+        }
+        // L1 开局预置怪：堵"开局跑去长时间刷道具"的投机——玩家一上来就得先守右路打怪。
+        // y 从【半屏一直铺到屏顶】(midY→SCREEN_TOP)形成一条连续往下走的怪龙：第一波(半屏)清完时,
+        // 上方的预置怪正好接着下来,无缝衔接到正常出怪流——消除"第一波清完到正常怪下来"的 5s 空窗(用户要"接上")。
+        // 血量 ÷HORDE_DENSITY(L1=24) 与正常出怪一致(否则单只血变厚,渲染按 maxHp 染红像高级怪——已修 bug)。
+        if (this.state.level === 1 && this._def) {
+            const hpMul0 = this._def.threat[0].hpMul / (this._def.hordeDensity ?? HORDE_DENSITY);
+            const type = this._def.enemyPool[0];
+            // 怪海铺在[泳道一半 → 屏顶]：开局上半屏铺满(对峙感)，泳道下半留缓冲 → 起步不掉血，
+            // 怪要走一段才压到掉血线(BASELINE_Y)。底排对齐到泳道中点而非掉血线(原来贴线=一出来就扣血)。
+            const laneMid = (SCREEN_TOP + BASELINE_Y) / 2;
+            const N = 40;
+            for (let i = 0; i < N; i++) {
+                const t = i / (N - 1);
+                const y = laneMid + (SCREEN_TOP - laneMid) * t + (this._rng.next() - 0.5) * 40;
+                this._spawnPreseed(type, hpMul0, y);
+            }
+        }
+    }
+
+    // 预置怪（开局已在场内某 y 位置，非从屏顶下来）。复用普通怪血量/横向铺满逻辑，仅 y 由参数指定。
+    private _spawnPreseed(type: EnemyType, hpMul: number, y: number) {
+        const base = ENEMY_BASE[type];
+        const cfg: EnemyConfig = { ...base, hp: Math.max(1, Math.round(base.hp * hpMul)) };
+        // 生成范围按怪视觉半宽(radius×1.55) inset 到红框[18,349]内，新怪一出来立绘就不越界。
+        // 横向分布纯视觉，不参与占道命中判定(命中看 y/第一排)，不影响难度/bot。
+        const visR = base.radius * 1.55;
+        const lo = 18 + visR, hi = 349 - visR;
+        this.enemies.push({
+            id: this._nextId++,
+            x: lo + this._rng.next() * Math.max(1, hi - lo),
+            y,
+            cfg, hp: cfg.hp, maxHp: cfg.hp, isWaveBoss: false,
+        });
     }
 
     // ---- 主步进 ----
@@ -177,13 +218,13 @@ export class GameWorld {
         this.levelTime += dt;
 
         this._movePlayer(dt, input.playerTargetX);
-        this._shoot(dt);
         this._spawnByThreat(dt);
         this._maybeSpawnBoss();
+        this._spawnVisualTracers(dt);   // 纯视觉子弹（手感），不参与伤害
         this._moveBullets(dt);
+        this._applyFire(dt, ev);        // 占领某路=对该路全体输出（命中模型）
         this._moveEnemies(dt, ev);
         this._slideGates(dt);
-        this._collide(ev);
 
         return ev;
     }
@@ -197,22 +238,77 @@ export class GameWorld {
         this.playerX = Math.abs(dx) < step ? tx : this.playerX + Math.sign(dx) * step;
     }
 
-    private _shoot(dt: number) {
+    // 命中模型：「占领某路 = 对该路全体输出」（零瞄准，认知门槛最低，B 范式极致）。
+    // 不再用子弹物理碰撞——玩家站哪条路，总 DPS 就施加到那条路的目标上：
+    //   右路 → 总 DPS 平摊给右路所有怪（怪海越密单只越难死 = 整体压迫感，类 VS 光环）
+    //   左路 → 总 DPS 打活跃道具门（slot0）
+    // 移动中火力打折不归零（B 范式战术代价）。子弹只剩纯视觉（renderer 自行画飞行子弹做手感）。
+    private _applyFire(dt: number, ev: WorldEvent[]) {
+        const firePower = this._moving ? MOVE_FIRE_PENALTY : 1;   // 移动时半火力（B范式）
+        if (this.playerX < 0) this._fireLeft(dt * firePower, ev);
+        else this._fireRight(computeDps(this.state) * firePower * dt, ev);
+    }
+
+    // 右路：总伤害只平摊给「第一排」（最靠下的一带怪），不是全屏平摊。
+    // 全屏平摊会让所有怪血量同步下降→"集体暴毙"（反直觉）；只打第一排 → 一排一排往上推平，
+    // 有"逐排击破"的清晰过程 + 怪海后排仍铺满（视觉压迫不变）。先打最靠下的也合理（先清要扣血的）。
+    private _fireRight(totalDmg: number, ev: WorldEvent[]) {
+        if (this.enemies.length === 0) return;
+        // 第一排 = 最靠下的怪 + 其上 FRONT_ROW_BAND 内的怪（一带宽度，而非固定只数）
+        let minY = Infinity;
+        for (const e of this.enemies) if (e.y < minY) minY = e.y;
+        const front = this.enemies.filter(e => e.y <= minY + FRONT_ROW_BAND);
+        const per = totalDmg / front.length;
+        const dead = new Set<number>();
+        for (const e of front) {
+            e.hp -= per;
+            if (e.hp <= 0) { dead.add(e.id); this._onEnemyKilled(e, ev); }
+        }
+        // 单次批量移除（怪海下避免每杀一只 filter 一次的 O(K·N)）
+        if (dead.size) this.enemies = this.enemies.filter(e => !dead.has(e.id));
+    }
+
+    // 左路：按【时间】推进活跃道具门进度（打穿恒定 breakSecs 秒，与DPS无关）。
+    // effSec = 本帧有效火力时长（站定=dt，移动=dt×0.5）。修"越升级道具越快"的 bug。
+    private _fireLeft(effSec: number, ev: WorldEvent[]) {
+        const g = this.gates.find(gg => gg.slot === 0);
+        if (!g) return;
+        g.progress += effSec / g.breakSecs;
+        if (g.progress >= 1) this._clearGate(g, ev);
+    }
+
+    // 纯视觉子弹（射击手感）——每发飞向"占领那条路的一个目标"（右路某只怪 / 左路道具门），
+    // 让视觉与"占领即全体输出"判定一致（自动弹幕，看起来确实打在怪身上，零瞄准）。
+    private _spawnVisualTracers(dt: number) {
         this._shootTimer -= dt;
         if (this._shootTimer > 0) return;
         this._shootTimer = SHOOT_INTERVAL;
-        const stat = WEAPON_STATS[this.state.weaponLevel];
-        const n = Math.min(this.state.personCount, PERSON_OFFSETS.length);
-        // 移动中火力打折但不归零（B 范式战术代价，见 MOVE_FIRE_PENALTY）
-        const dmg = this._moving ? stat.damage * MOVE_FIRE_PENALTY : stat.damage;
+        // 目标池：右路时只打"第一排"（与 _fireRight 一致，子弹飞向正在掉血的那批怪），左路时是活跃道具门
+        const onLeft = this.playerX < 0;
+        let targets: { x: number; y: number }[];
+        if (onLeft) {
+            targets = this.gates.filter(g => g.slot === 0).map(g => ({ x: g.x, y: g.y }));
+        } else {
+            let minY = Infinity;
+            for (const e of this.enemies) if (e.y < minY) minY = e.y;
+            targets = this.enemies.filter(e => e.y <= minY + FRONT_ROW_BAND).map(e => ({ x: e.x, y: e.y }));
+        }
+        if (targets.length === 0) return;   // 没目标不发弹（没在对着空气打）
+        const stat = weaponStat(this.state.weaponLevel);
+        // 弹道发射点用 personLayout(与渲染小人同源,避免错位)。人数无上限,但发弹数封顶 VISUAL_BULLET_CAP
+        // 防超多人时每帧子弹爆炸(纯视觉,不影响伤害——伤害是"占领即全体输出"模型)。
+        const layout = personLayout(this.state.personCount);
+        const n = Math.min(layout.length, VISUAL_BULLET_CAP);
         for (let i = 0; i < n; i++) {
-            const off = PERSON_OFFSETS[i];
+            const off = layout[i];
+            // 每个小人随机分一个目标（弹幕铺开飞向不同怪）
+            const t = targets[Math.floor(this._rng.next() * targets.length)];
             this.bullets.push({
                 id: this._nextId++,
-                x: this.playerX + off[0],
-                y: PLAYER_Y + off[1] + 40,
-                damage: dmg, width: stat.bulletWidth,
-                weak: this._moving,   // 渲染层据此外显"移动中火力减弱"（juice）
+                x: this.playerX + off.dx,
+                y: PLAYER_Y + off.dy + 40,
+                tx: t.x, ty: t.y, width: stat.bulletWidth,
+                weak: this._moving,   // 移动中视觉弱化（juice）
             });
         }
     }
@@ -230,12 +326,15 @@ export class GameWorld {
             this._burstMul = 0.35 + this._rng.next() * 1.3;
             this._burstTimer = 1.0 + this._rng.next() * 1.5;  // 每 1~2.5s 换一次波段
         }
-        this._spawnAccum += spawnRate * this._burstMul * dt;
+        // 怪海密度：出怪量 ×density 造"满屏怪海"，同时单只血量 ÷density，使总威胁基本守恒。
+        // 每关可覆盖 hordeDensity(L1=24,base.hp 已×100 无血量地板失真;省略则默认 36 填满右路)。
+        const density = this._def.hordeDensity ?? HORDE_DENSITY;
+        this._spawnAccum += spawnRate * density * this._burstMul * dt;
         while (this._spawnAccum >= 1) {
             this._spawnAccum -= 1;
             const pool = this._def.enemyPool;
             const type = pool[Math.floor(this._rng.next() * pool.length)];  // 随机怪种
-            this._spawnPoolEnemy(type, hpMul);
+            this._spawnPoolEnemy(type, hpMul / density);
         }
     }
 
@@ -248,25 +347,12 @@ export class GameWorld {
         }
     }
 
-    // 抗成长通胀系数：怪血随玩家当前 DPS 次线性追赶（≥1）。详见 CHASE_* 常量。
-    private _dpsChase(): number {
-        const dps = computeDps(this.state);
-        return Math.max(1, Math.pow(dps / CHASE_BASE_DPS, CHASE_EXP));
-    }
-
-    // 潮水普通怪：血量 = 固定曲线 hpMul × 抗成长通胀的 DPS 追赶系数。
+    // 潮水普通怪：血量 = base.hp × 固定威胁曲线 hpMul（**不挂玩家DPS**，固定时间线）。
+    // 怪自顾自按设计曲线变强，玩家必须靠升级追上它——逼"必须在某节点刷到道具"，否则裸装扛不住。
+    // 潮水普通怪从屏顶出现。与预置怪唯一差别是 y(屏顶 vs 半屏),故复用 _spawnPreseed。
     private _spawnPoolEnemy(type: EnemyType, hpMul: number) {
-        const base = ENEMY_BASE[type];
-        const cfg: EnemyConfig = {
-            ...base,
-            hp: Math.max(1, Math.round(base.hp * hpMul * this._dpsChase())),
-        };
-        this.enemies.push({
-            id: this._nextId++,
-            x: LANE_RIGHT_X - this._rng.next() * ENEMY_SPAWN_JITTER,  // 随机出怪 X（可达范围内）
-            y: SCREEN_TOP + cfg.radius + 10,
-            cfg, hp: cfg.hp, maxHp: cfg.hp, isWaveBoss: false,
-        });
+        // 横向铺满右路 [≈20,190] 由 _spawnPreseed 统一处理；y = 屏顶(怪半径+边距)
+        this._spawnPreseed(type, hpMul, SCREEN_TOP + ENEMY_BASE[type].radius + 10);
     }
 
     private _spawnBoss(type: EnemyType, hp: number) {
@@ -274,29 +360,83 @@ export class GameWorld {
         const cfg: EnemyConfig = { ...base, hp };
         this.enemies.push({
             id: this._nextId++,
-            x: LANE_RIGHT_X - 0.5 * ENEMY_SPAWN_JITTER,
+            x: LANE_RIGHT_X,   // Boss 居中右路
             y: SCREEN_TOP + cfg.radius + 10,
             cfg, hp, maxHp: hp, isWaveBoss: true,
         });
     }
 
+    // 视觉子弹飞向目标点（自动弹幕），到达即消失（命中特效由渲染层做）
     private _moveBullets(dt: number) {
-        for (const b of this.bullets) b.y += BULLET_SPEED * dt;
-        this.bullets = this.bullets.filter(b => b.y <= SCREEN_TOP);
+        const step = BULLET_SPEED * dt;
+        const survivors: Bullet[] = [];
+        for (const b of this.bullets) {
+            const dx = b.tx - b.x, dy = b.ty - b.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist <= step) continue;   // 到达目标，消失
+            b.x += dx / dist * step;
+            b.y += dy / dist * step;
+            survivors.push(b);
+        }
+        this.bullets = survivors;
     }
 
     private _moveEnemies(dt: number, ev: WorldEvent[]) {
+        this._separateEnemies(dt);   // 横向分离(防穿模，纯视觉，不动 y/命中)
         const survivors: Enemy[] = [];
+        let bossLeaked = false;
         for (const e of this.enemies) {
             e.y -= e.cfg.speed * dt;
             if (e.y < BASELINE_Y) {
-                this._damagePlayer(e.cfg.damage, ev);
-                ev.push({ kind: 'enemy_reached', damage: e.cfg.damage });
+                if (e.isWaveBoss) {
+                    // Boss 漏到底线：吃掉【最大血量的 80%】(按比例,如 maxHp10000→扣8000) + 直接算过关
+                    // (Boss 没被打死也通关,避免卡关)。残血时被扣 80 可能直接死→game over。
+                    this._damagePlayer(this.state.maxHp * 0.8, ev);
+                    ev.push({ kind: 'enemy_reached', damage: e.cfg.damage });
+                    bossLeaked = true;   // 本帧结束后触发过关(先把剩余怪处理完)
+                } else {
+                    this._damagePlayer(e.cfg.damage, ev);
+                    ev.push({ kind: 'enemy_reached', damage: e.cfg.damage });
+                }
             } else {
                 survivors.push(e);
             }
         }
         this.enemies = survivors;
+        // Boss 漏掉过关：放在循环后,且仅当玩家没被 80% 扣血扣死时才算过关(死了就是 game over)。
+        if (bossLeaked && this.running && !this.gameOver) this._onLevelComplete(ev);
+    }
+
+    // 横向分离(防穿模)：简化 Reynolds separation——只保留 separation(无 alignment/cohesion)、
+    // 只调 x(纯横向、不动 y/命中)、O(n²) 朴素遍历(怪量级几十~百足够,无需 spatial grid)。
+    // 确定性函数(只依赖怪位置,无随机)→ 不破坏 replay；e.x 不参与占道命中→ 不影响难度/bot。
+    // 允许适度重叠、只防完全堆叠(业界共识:Vampire Survivors 等也允许部分重叠)。
+    private _separateEnemies(dt: number) {
+        const n = this.enemies.length;
+        if (n < 2) return;
+        const PUSH = 140;          // 推力强度(px/s)，大怪需更大位移才分得开
+        // 粗夹在右路逻辑范围 world x∈[18,349]，防怪飘太远；精确视觉边界由 render 层按真实显示宽 clamp(单一真相源)。
+        const LANE_L = 18, LANE_R = 349;
+        // 分离间距按视觉半径算(radius×1.55)，匹配渲染放大，避免大怪因绝对尺寸大而仍重叠。
+        const visR = (e) => e.cfg.radius * 1.55;
+        for (let i = 0; i < n; i++) {
+            const a = this.enemies[i];
+            const ra = visR(a);
+            let dx = 0;
+            for (let j = 0; j < n; j++) {
+                if (i === j) continue;
+                const b = this.enemies[j];
+                const want = (ra + visR(b)) * 0.85;   // 期望间距=两怪视觉半径和(0.85 允许轻微重叠，业界共识)
+                if (Math.abs(b.y - a.y) > want) continue;   // y 差超过期望间距=非邻居(剪枝)
+                const d = a.x - b.x;
+                const ad = Math.abs(d);
+                if (ad < want && ad > 0.001) dx += (d / ad) * (want - ad);   // 越近推越狠(类 1/r)
+                else if (ad <= 0.001) dx += (i < j ? 1 : -1) * want;          // 完全重合:按序错开
+            }
+            a.x += Math.max(-PUSH * dt, Math.min(PUSH * dt, dx * dt));        // 限幅,平滑
+            // 粗夹在右路逻辑范围(精确边界由 render 层按真实显示宽 clamp，单一真相源)
+            if (a.x < LANE_L) a.x = LANE_L; else if (a.x > LANE_R) a.x = LANE_R;
+        }
     }
 
     private _slideGates(dt: number) {
@@ -308,58 +448,12 @@ export class GameWorld {
         }
     }
 
-    // ---- 碰撞 ----
-    private _collide(ev: WorldEvent[]) {
-        const deadBullets = new Set<number>();
-        for (const b of this.bullets) {
-            if (deadBullets.has(b.id)) continue;
-            const isLeft = b.x < 0;
-            if (isLeft) {
-                if (this._bulletVsGate(b, ev)) deadBullets.add(b.id);
-            } else {
-                if (this._bulletVsEnemy(b, ev)) { deadBullets.add(b.id); continue; }
-                if (this._bulletVsGate(b, ev)) deadBullets.add(b.id);  // 右路自由掉落补血
-            }
-        }
-        if (deadBullets.size) this.bullets = this.bullets.filter(b => !deadBullets.has(b.id));
-    }
-
-    private _bulletVsEnemy(b: Bullet, ev: WorldEvent[]): boolean {
-        for (const e of this.enemies) {
-            const dx = b.x - e.x, dy = b.y - e.y;
-            const r = e.cfg.radius + b.width * 0.5;
-            if (dx * dx + dy * dy < r * r) {
-                e.hp -= b.damage;
-                if (e.hp <= 0) this._killEnemy(e, ev);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private _bulletVsGate(b: Bullet, ev: WorldEvent[]): boolean {
-        for (const g of this.gates) {
-            if (!this._gateHittable(g)) continue;
-            if (Math.abs(b.x - g.x) < GATE_HIT_W / 2 && Math.abs(b.y - g.y) < GATE_HIT_H / 2) {
-                g.hp -= b.damage;
-                if (g.hp <= 0) this._clearGate(g, ev);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private _gateHittable(g: Gate): boolean {
-        return g.slot === 0 || g.freeDrop;
-    }
-
     // ---- 怪死亡 ----
-    private _killEnemy(e: Enemy, ev: WorldEvent[]) {
-        this.enemies = this.enemies.filter(x => x.id !== e.id);
+    // 处理一只怪死亡的【副作用】（计分/事件/通关），不负责从数组移除——移除由调用方批量做。
+    private _onEnemyKilled(e: Enemy, ev: WorldEvent[]) {
         this.state.score += e.cfg.scoreValue;
-        ev.push({ kind: 'enemy_killed', cfg: e.cfg });
+        ev.push({ kind: 'enemy_killed', cfg: e.cfg, x: e.x, y: e.y });   // 带死亡真实坐标→特效画在兵线处(随DPS前后移)
         ev.push({ kind: 'score', score: this.state.score });
-        if (e.cfg.healDrop) this._spawnHealDrop(e.x, e.y);
 
         // 杀掉波次Boss（时间轴最后一个怪）→ 通关本关。与怪类型无关，避免漏判 brute 类波次Boss
         if (e.isWaveBoss) this._onLevelComplete(ev);
@@ -380,56 +474,39 @@ export class GameWorld {
     // ---- 道具门 ----
     private _fillSlot(slot: number) {
         const cfg = this._nextGateConfig();
-        const hp = this._gateHp(cfg.type);
         this.gates.push({
             id: this._nextId++, x: LANE_LEFT_X, y: SLOT_Y[slot], targetY: SLOT_Y[slot],
-            type: cfg.type, hp, maxHp: hp, label: cfg.label, healAmount: cfg.healAmount,
-            slot, freeDrop: false,
+            type: cfg.type, label: cfg.label,
+            breakSecs: this._def!.gateSeconds[cfg.type], progress: 0,
+            slot,
         });
     }
 
     // 道具随机抽取（形态随机：每局道具顺序不同，玩家不能背"槽0永远是武器"）。
-    // 从序列里随机挑一个未满级的类型；用序列的类型构成做加权（保持武器/人/血的大致比例）。
-    private _nextGateConfig() {
-        const usable = GATE_SEQUENCE.filter(t => {
-            if (t.type === GateType.WEAPON_UP && this.state.weaponLevel >= MAX_WEAPON_LEVEL) return false;
-            if (t.type === GateType.PERSON_UP && this.state.personCount >= MAX_PERSON) return false;
-            return true;
-        });
-        if (usable.length === 0) return { type: GateType.HEAL, label: '+30 血', healAmount: 30 };
-        return usable[Math.floor(this._rng.next() * usable.length)];
-    }
-
-    private _gateHp(type: GateType): number {
-        const dps = computeDps(this.state);
-        const secs = this._def!.gateSeconds[type];
-        const floor = type === GateType.WEAPON_UP ? 10 : type === GateType.PERSON_UP ? 8 : 5;
-        return Math.max(floor, Math.round(dps * secs));
+    // 升级无上限：武器/加人都无限×2,道具门永远有效(消除旧"满级出+0无效门"的 bug)。
+    // label 仅占位；加人门实际显示由渲染层按实时 personCount 动态算(绕开提前生成锁定旧人数的时机 bug)。
+    private _nextGateConfig(): { type: GateType; label: string } {
+        return GATE_SEQUENCE[Math.floor(this._rng.next() * GATE_SEQUENCE.length)];
     }
 
     private _clearGate(g: Gate, ev: WorldEvent[]) {
-        // 应用效果
+        // 应用效果（只有攻击道具：武器升级 / 加人）
         switch (g.type) {
             case GateType.WEAPON_UP:
-                if (this.state.weaponLevel < MAX_WEAPON_LEVEL) this.state.weaponLevel++;
+                this.state.weaponLevel++;   // 武器无上限：每次伤害 ×2(2^level)
                 ev.push({ kind: 'weapon_up', level: this.state.weaponLevel });
                 break;
             case GateType.PERSON_UP:
-                if (this.state.personCount < MAX_PERSON) this.state.personCount++;
+                this.state.personCount *= 2;   // 加人无上限：每次 ×2(1→2→4→8→16→32→64…)
                 ev.push({ kind: 'person_up', count: this.state.personCount });
-                break;
-            case GateType.HEAL:
-                this._heal(g.healAmount ?? 30, ev);
                 break;
         }
         ev.push({ kind: 'gate_cleared', type: g.type, label: g.label });
 
         this.gates = this.gates.filter(x => x.id !== g.id);
-        if (g.freeDrop) return;  // 自由掉落不走传送带
 
         // 传送带下移 + 顶部补入
         for (const other of this.gates) {
-            if (other.freeDrop) continue;
             if (other.slot > g.slot) { other.slot--; other.targetY = SLOT_Y[other.slot]; }
         }
         this._fillSlotTop();
@@ -437,19 +514,11 @@ export class GameWorld {
 
     private _fillSlotTop() {
         const cfg = this._nextGateConfig();
-        const hp = this._gateHp(cfg.type);
         this.gates.push({
             id: this._nextId++, x: LANE_LEFT_X, y: SCREEN_TOP + 80, targetY: SLOT_Y[3],
-            type: cfg.type, hp, maxHp: hp, label: cfg.label, healAmount: cfg.healAmount,
-            slot: 3, freeDrop: false,
-        });
-    }
-
-    private _spawnHealDrop(x: number, y: number) {
-        this.gates.push({
-            id: this._nextId++, x: Math.max(0, x), y, targetY: y,
-            type: GateType.HEAL, hp: 1, maxHp: 1, label: '+50 血', healAmount: 50,
-            slot: -1, freeDrop: true,
+            type: cfg.type, label: cfg.label,
+            breakSecs: this._def!.gateSeconds[cfg.type], progress: 0,
+            slot: 3,
         });
     }
 
@@ -461,12 +530,6 @@ export class GameWorld {
             this.running = false; this.gameOver = true; this.won = false;
             ev.push({ kind: 'game_over', win: false });
         }
-    }
-
-    private _heal(amount: number, ev: WorldEvent[]) {
-        this.state.hp = Math.min(this.state.maxHp, this.state.hp + amount);
-        ev.push({ kind: 'heal', amount });
-        ev.push({ kind: 'player_hit', hp: this.state.hp, maxHp: this.state.maxHp });
     }
 
     // 渲染层用：玩家本帧是否在移动（外显"移动损失火力"）
