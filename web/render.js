@@ -11,6 +11,34 @@ const ENEMY_COLORS = {
 };
 const GATE_COLORS = { weapon_up: '#3DE0C8', person_up: '#7EE9FF' };
 
+// 怪类型 → 立绘资源 key
+const ENEMY_TEX = {
+    grunt: 'enemy_grunt', runner: 'enemy_runner', brute: 'enemy_brute',
+    mini_boss: 'enemy_miniboss', boss: 'enemy_boss',
+};
+// 武器档(0~5) → 门内武器图标 key（0手枪无门图标，门只显示可升到的1~5档）
+const WEAPON_TEX = [null, 'weapon_smg', 'weapon_rifle', 'weapon_mg', 'weapon_hmg', 'weapon_laser'];
+
+// 美术资源清单：key → 路径（根相对，页面在 /web/ 下，素材在项目根 /assets/）
+const TEX_PATHS = {
+    player:      '/assets/textures/characters/player.png',
+    enemy_grunt: '/assets/textures/enemies/enemy_grunt.png',
+    enemy_runner:'/assets/textures/enemies/enemy_runner.png',
+    enemy_brute: '/assets/textures/enemies/enemy_brute.png',
+    enemy_miniboss:'/assets/textures/enemies/enemy_miniboss.png',
+    enemy_boss:  '/assets/textures/enemies/enemy_boss.png',
+    gate_crystal:'/assets/textures/gates/gate_crystal.png',
+    weapon_smg:  '/assets/textures/gates/weapon_smg.png',
+    weapon_rifle:'/assets/textures/gates/weapon_rifle.png',
+    weapon_mg:   '/assets/textures/gates/weapon_mg.png',
+    weapon_hmg:  '/assets/textures/gates/weapon_hmg.png',
+    weapon_laser:'/assets/textures/gates/weapon_laser.png',
+    death_big:   '/assets/textures/vfx/death_big.png',
+    death_small: '/assets/textures/vfx/death_small.png',
+    crystal_explosion:'/assets/textures/vfx/crystal_explosion.png',
+    bg_tiles:    '/assets/textures/background/bg_tiles.png',
+};
+
 export class Renderer {
     constructor(canvas) {
         this.cv = canvas;
@@ -18,7 +46,38 @@ export class Renderer {
         // canvas 像素尺寸固定 750×1334，CSS 缩放
         this.cv.width = 750; this.cv.height = 1334;
         this.scale = 1;
+        // 异步加载所有美术资源；未加载完前对应绘制回退到色块
+        this.tex = {};
+        this.texReady = false;
+        this._loadTextures();
         this.reset();
+    }
+
+    _loadTextures() {
+        const keys = Object.keys(TEX_PATHS);
+        let left = keys.length;
+        for (const k of keys) {
+            const img = new Image();
+            img.onload = () => { this.tex[k] = img; if (--left === 0) this.texReady = true; };
+            img.onerror = () => { console.error('素材加载失败:', TEX_PATHS[k]); if (--left === 0) this.texReady = true; };
+            img.src = TEX_PATHS[k];
+        }
+    }
+
+    // 把图按"目标显示直径 dia"居中画在 (x,y)，保持原图宽高比。flipX 水平翻转。
+    _img(c, key, x, y, dia, opt = {}) {
+        const img = this.tex[key];
+        if (!img) return false;
+        const ar = img.width / img.height;
+        let w, h;
+        if (ar >= 1) { w = dia; h = dia / ar; } else { h = dia; w = dia * ar; }
+        c.save();
+        c.translate(x, y);
+        if (opt.flipX) c.scale(-1, 1);
+        if (opt.alpha != null) c.globalAlpha = opt.alpha;
+        c.drawImage(img, -w / 2, -h / 2, w, h);
+        c.restore();
+        return true;
     }
 
     // juice 状态：震屏强度、受伤闪红、击杀火花、升级弹字
@@ -26,6 +85,7 @@ export class Renderer {
         this.shake = 0;          // 屏幕震动强度（衰减）
         this.hurtFlash = 0;      // 受伤红闪（0~1 衰减）
         this.sparks = [];        // 击杀火花 {x,y,life,col}
+        this.deaths = [];        // 死亡特效 {x,y,life,tex,dia}（黑底发光图，Additive）
         this.pops = [];          // 升级弹字 {life,text,col}
         this.banner = null;      // 关卡横幅（大字居中，过关/进关用）
         this._lastHp = Infinity; // 上帧HP（判掉血→红闪）；Infinity 使新局首次受伤必触发
@@ -36,6 +96,13 @@ export class Renderer {
     consume(events) {
         for (const e of events) {
             if (e.kind === 'enemy_killed') {
+                // 死亡特效（黑底发光图，Additive）：大怪 death_big，杂兵 death_small。
+                // core 不传死亡位置，按右路区域散布（与火花一致的近似处理）。
+                const big = e.cfg.type === 'brute' || e.cfg.type === 'mini_boss' || e.cfg.type === 'boss';
+                this.deaths.push({
+                    x: LANE_RIGHT_X + (Math.random()-0.5)*120, y: -360 + (Math.random()-0.5)*200,
+                    life: 1, tex: big ? 'death_big' : 'death_small', dia: (big ? e.cfg.radius*2.6 : e.cfg.radius*2.0),
+                });
                 // 击杀火花：在右路出几粒
                 for (let i = 0; i < 5; i++)
                     this.sparks.push({ x: LANE_RIGHT_X + (Math.random()-0.5)*60, y: -380 + (Math.random()-0.5)*80,
@@ -87,6 +154,19 @@ export class Renderer {
 
     // ---- juice 绘制 ----
     _fx(c) {
+        // 死亡特效（黑底发光图 → Additive 混合，黑色自动消失，发光叠加）
+        c.save();
+        c.globalCompositeOperation = 'lighter';
+        for (const d of this.deaths) {
+            const x = this.tx(d.x), y = this.ty(d.y);
+            const grow = 1 + (1 - d.life) * 0.6;   // 略微扩张
+            c.globalAlpha = Math.max(0, d.life);
+            this._img(c, d.tex, x, y, d.dia * grow);
+            d.life -= 0.05;
+        }
+        c.restore();
+        c.globalAlpha = 1;
+        this.deaths = this.deaths.filter(d => d.life > 0);
         // 火花
         for (const s of this.sparks) {
             const x = this.tx(s.x), y = this.ty(s.y);
@@ -134,84 +214,163 @@ export class Renderer {
     }
 
     _bg(c) {
-        c.fillStyle = '#0c0f16'; c.fillRect(0, 0, 750, 1334);
-        // 左路
-        c.fillStyle = '#142030';
-        c.fillRect(this.tx(LANE_LEFT_X - 170), 0, 340, 1334);
-        // 右路
-        c.fillStyle = '#201216';
-        c.fillRect(this.tx(LANE_RIGHT_X - 170), 0, 340, 1334);
-        // 分割线
-        c.strokeStyle = 'rgba(58,74,107,0.8)'; c.lineWidth = 3;
-        c.beginPath(); c.moveTo(this.tx(0), 0); c.lineTo(this.tx(0), 1334); c.stroke();
-        // 底线
-        c.strokeStyle = 'rgba(61,224,200,0.5)'; c.lineWidth = 2;
+        const bg = this.tex.bg_tiles;
+        if (bg) {
+            // 纵向无缝平铺滚动：按 750 宽缩放，纵向铺满 + 随时间向下滚动制造前进感
+            const tileW = 750, tileH = 750 * bg.height / bg.width;
+            const off = (this.t * 60) % tileH;   // 向下滚动偏移
+            for (let y = -tileH + off; y < 1334; y += tileH) {
+                c.drawImage(bg, 0, y, tileW, tileH);
+            }
+            // 压暗罩：背景偏亮会吃掉发光特效/子弹，压一层深色让前景跳出来（交接说明§五硬约束）
+            c.fillStyle = 'rgba(8,10,18,0.42)'; c.fillRect(0, 0, 750, 1334);
+        } else {
+            c.fillStyle = '#0c0f16'; c.fillRect(0, 0, 750, 1334);
+        }
+        // 左右泳道着色（让玩家一眼看清两条道）
+        const midX = this.tx(0);
+        c.fillStyle = 'rgba(245,166,35,0.06)'; c.fillRect(0, 0, midX, 1334);
+        c.fillStyle = 'rgba(229,72,77,0.07)';  c.fillRect(midX, 0, 750 - midX, 1334);
+        // 三道立体砖墙：左外墙 + 中央隔墙 + 右外墙（把屏幕围成两条被墙夹住的泳道）
+        this._wall(c, 0, 26, false);          // 左外墙（亮面朝右）
+        this._wall(c, midX - 18, 36, true);   // 中央隔墙（双面，较厚）
+        this._wall(c, 750 - 26, 26, false, true); // 右外墙（亮面朝左，镜像）
+        // 底线（怪到此线扣血，保留——是玩法可读性关键线）
+        c.strokeStyle = 'rgba(255,90,90,0.55)'; c.lineWidth = 3;
         c.beginPath(); c.moveTo(0, this.ty(BASELINE_Y)); c.lineTo(750, this.ty(BASELINE_Y)); c.stroke();
+    }
+
+    // 画一道竖直立体砖墙：x=左缘, ww=宽, divider=是否中央隔墙(双面立体), flip=镜像(右外墙)
+    _wall(c, x, ww, divider, flip = false) {
+        c.save();
+        // 墙体渐变（亮面→暗面，营造圆柱/砖墙立体感）
+        const g = c.createLinearGradient(x, 0, x + ww, 0);
+        if (divider) {            // 中央隔墙：两侧暗、中间亮（双面受光）
+            g.addColorStop(0, '#2a2620'); g.addColorStop(0.5, '#6b5d44');
+            g.addColorStop(1, '#2a2620');
+        } else if (flip) {        // 右外墙：左亮右暗
+            g.addColorStop(0, '#6b5d44'); g.addColorStop(1, '#2a2620');
+        } else {                  // 左外墙：左暗右亮
+            g.addColorStop(0, '#2a2620'); g.addColorStop(1, '#6b5d44');
+        }
+        c.fillStyle = g; c.fillRect(x, 0, ww, 1334);
+        // 顶部高光棱线
+        c.fillStyle = 'rgba(255,240,200,0.25)';
+        c.fillRect(x + (divider ? ww/2 - 1.5 : flip ? 1 : ww - 3), 0, 3, 1334);
+        // 砖缝横纹（每 56px 一道暗缝，砖墙质感）
+        c.strokeStyle = 'rgba(0,0,0,0.35)'; c.lineWidth = 2;
+        for (let y = (this.t * 60) % 56; y < 1334; y += 56) {   // 随背景一起向下滚
+            c.beginPath(); c.moveTo(x, y); c.lineTo(x + ww, y); c.stroke();
+        }
+        // 内外缘暗描边（让墙与泳道分明）
+        c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1.5;
+        c.strokeRect(x + 0.5, 0, ww - 1, 1334);
+        c.restore();
     }
 
     _gates(c, w) {
         for (const g of w.gates) {
             const x = this.tx(g.x), y = this.ty(g.y);
-            const gw = 140, gh = 64;
             const active = g.slot === 0;   // 只有 slot0(玩家正在打的)是活跃门、显示血量
             const col = GATE_COLORS[g.type] || '#888';
-            // 进度填充（slot0 才显示打穿进度条；后排只画框，不显示进度）
             const prog = Math.max(0, Math.min(1, g.progress || 0));
-            c.fillStyle = this._hexA(col, active ? 0.25 : 0.12);
-            this._roundRect(c, x - gw / 2, y - gh / 2, gw, gh, 12); c.fill();
+            // 琥珀壳立绘(横置 1769x889 ≈ 2:1)。塞满左路宽度(~320)。
+            const shellW = 320, shellH = shellW * 889 / 1769;
+            const crystal = this.tex.gate_crystal;
+            if (crystal) {
+                c.save(); c.globalAlpha = active ? 1 : 0.62;   // 非活跃门变暗
+                c.drawImage(crystal, x - shellW / 2, y - shellH / 2, shellW, shellH);
+                c.restore();
+            } else {
+                c.fillStyle = this._hexA(col, active ? 0.25 : 0.12);
+                this._roundRect(c, x - shellW/2, y - shellH/2, shellW, shellH, 12); c.fill();
+            }
+            // 中央内含物：武器门=武器图标；加人门=缩小主角立绘（相对水晶更小，留出琥珀边框）
+            const innerDia = shellH * 0.5;
+            if (g.type === 'weapon_up') {
+                // 门显示"再升一级会变成的武器"图标(当前等级+1，封顶激光5)
+                const nextLv = Math.min(w.state.weaponLevel + 1, 5);
+                this._img(c, WEAPON_TEX[nextLv] || 'weapon_smg', x, y - shellH * 0.06, innerDia, { alpha: active ? 1 : 0.7 });
+            } else if (g.type === 'person_up') {
+                this._img(c, 'player', x, y - shellH * 0.06, innerDia * 0.92, { alpha: active ? 1 : 0.7 });
+            }
+            // 封印高光（橙黄半透明罩 + 顶部一道高光，模拟"封在琥珀里"）
+            c.save();
+            c.globalAlpha = active ? 0.18 : 0.1;
+            c.fillStyle = '#F5A623';
+            this._roundRect(c, x - shellW * 0.42, y - shellH * 0.36, shellW * 0.84, shellH * 0.72, 10); c.fill();
+            c.restore();
+            // 标签 + 数量（加人门动态算：打穿前人数 = 当前 × 2^(更靠前加人门数)）。放琥珀壳下方，不压图标。
+            const label = g.type === 'weapon_up'
+                ? weaponName(Math.min(w.state.weaponLevel + 1, 5))
+                : (() => { let ahead = 0; for (const o of w.gates) if (o.type === 'person_up' && o.slot < g.slot) ahead++;
+                           return `+${w.state.personCount * Math.pow(2, ahead)} 人`; })();
+            const ly = y + shellH * 0.5 + 4;
+            c.fillStyle = '#fff'; c.strokeStyle = 'rgba(0,0,0,0.75)'; c.lineWidth = 5;
+            c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = 'bold 26px sans-serif';
+            c.strokeText(label, x, ly); c.fillText(label, x, ly);
+            // 活跃门血条/裂纹：上方进度条(打穿进度)
             if (active) {
-                c.fillStyle = this._hexA(col, 0.4);
-                this._roundRect(c, x - gw / 2, y - gh / 2, gw * prog, gh, 12); c.fill();
+                const bw = shellW * 0.8, bh = 7, by = y - shellH / 2 - 14;
+                c.fillStyle = 'rgba(0,0,0,0.55)'; c.fillRect(x - bw/2 - 1, by - 1, bw + 2, bh + 2);
+                c.fillStyle = 'rgba(40,40,40,0.9)'; c.fillRect(x - bw/2, by, bw, bh);
+                c.fillStyle = col; c.fillRect(x - bw/2, by, bw * prog, bh);
             }
-            c.strokeStyle = col; c.lineWidth = active ? 3 : 1.5;
-            this._roundRect(c, x - gw / 2, y - gh / 2, gw, gh, 12); c.stroke();
-            // 文字（道具名）。加人门动态显示"轮到它打穿时"会加多少人——翻倍机制下,
-            // 它前面(slot 更小=更靠下,会先打穿)每多一个加人门,人数就先翻倍一次。
-            // 所以本门加的量 = 当前人数 × 2^(前面更靠下的加人门数)。修"后排门显当前人数=错、到底才对"的 bug。
-            let label = g.label;
-            if (g.type === 'person_up') {
-                let ahead = 0;
-                for (const o of w.gates) if (o.type === 'person_up' && o.slot < g.slot) ahead++;
-                const before = w.state.personCount * Math.pow(2, ahead);   // 打穿前人数(无上限)
-                label = `+${before} 人`;   // 翻倍机制下加的量 = 打穿前人数(翻倍后-翻倍前 = before)
-            }
-            c.fillStyle = '#eaf0fa'; c.textAlign = 'center'; c.textBaseline = 'middle';
-            c.font = '20px sans-serif'; c.fillText(label, x, y);
         }
     }
 
     _enemies(c, w) {
-        // 先画普通怪、后画波次 Boss → Boss 永远在怪海【最上方】不被遮挡(用户要求 z-order)。
-        // isWaveBoss 标记本关 Boss(与类型无关,可能是 brute/mini_boss/boss)。
-        const ordered = [...w.enemies].sort((a, b) => (a.isWaveBoss ? 1 : 0) - (b.isWaveBoss ? 1 : 0));
+        // z-order：全按屏幕 y 升序画——上方(远)先画、下方(近)后画盖住，符合"近的在前遮远的"俯视透视。
+        // Boss 也按 y 正常参与遮挡(不再强制最上层,否则远处 Boss 会飘在近处小怪上=透视错)。
+        // Boss 血条单独提到最上层画(见下方 bossBars)，保证关底目标血量始终可见。
+        const ordered = [...w.enemies].sort((a, b) => this.ty(a.y) - this.ty(b.y));
+        const bossBars = [];   // 收集 Boss 血条，循环后统一画在最上层
+        // 红框(右路可用区)屏幕像素范围：中墙右缘 393 ~ 右墙左缘 724。
+        // 怪的边界 clamp 放在 render 层(单一真相源)——只有这里知道每个怪的真实显示宽，
+        // 才能按真实视觉半宽 inset，让立绘边缘不越红框(core 猜尺寸会错位=之前的 bug)。
+        const BOX_L = 393, BOX_R = 724;
         for (const e of ordered) {
-            // 视觉分级：怪越硬(maxHp 越高)→越大 + 颜色越红。强度一眼可辨(业界可读性标准)。
+            // 视觉分级：怪越硬(maxHp 越高)→越大。强度一眼可辨(业界可读性标准)。
             // tier 0~1：按 maxHp 对数分级（怪海里 hp 跨度大，用 log 压缩）
             const tier = Math.max(0, Math.min(1, Math.log2(Math.max(1, e.maxHp)) / 7));  // hp 1~128 → 0~1
-            const x = this.tx(e.x), y = this.ty(e.y);
-            const r = e.cfg.radius * (1 + tier * 0.8);   // 越硬越大（最多 1.8 倍）
-            c.fillStyle = this._tierColor(e.cfg.type, tier);
-            if (e.cfg.type === 'boss' || e.cfg.type === 'mini_boss') {
-                this._poly(c, x, y, r, e.cfg.type === 'boss' ? 6 : 5); c.fill();
-            } else if (e.cfg.type === 'brute') {
-                this._roundRect(c, x - r, y - r * 0.6, r * 2, r * 1.2, 8); c.fill();
-            } else {
+            const dia = e.cfg.radius * (1 + tier * 0.8) * 2 * 3.2;   // 显示直径
+            const visHalf = dia * 0.30;   // 立绘留白，身体实际视觉半宽≈直径×0.30
+            const y = this.ty(e.y);
+            // x 按真实视觉半宽 clamp 进红框，立绘边缘不越界
+            const x = Math.max(BOX_L + visHalf, Math.min(BOX_R - visHalf, this.tx(e.x)));
+            const r = e.cfg.radius * (1 + tier * 0.8);
+            // 行走蠕动动效(纯代码不画帧)：每只按 id 错开相位，叠加 摇摆+上下颠+倾斜，像一群活物往前涌。
+            // 大怪(boss/miniboss)动得慢而沉，小怪动得快而碎。
+            const img = this.tex[ENEMY_TEX[e.cfg.type]];
+            if (img) {
+                const ph = e.id * 1.3;                       // 个体相位错开
+                const slow = (e.cfg.type === 'boss' || e.cfg.type === 'mini_boss') ? 0.55 : 1;
+                const sway = Math.sin(this.t * 7 * slow + ph) * dia * 0.04;        // 左右晃
+                const bob  = Math.abs(Math.sin(this.t * 9 * slow + ph)) * dia * 0.05; // 迈步上下颠(abs=只往上颠)
+                const rock = Math.sin(this.t * 7 * slow + ph) * 0.09;             // 身体左右倾(弧度)
+                const ar = img.width / img.height;
+                const w2 = ar >= 1 ? dia : dia * ar, h2 = ar >= 1 ? dia / ar : dia;
+                c.save();
+                c.translate(x + sway, y - bob);
+                c.rotate(rock);
+                c.drawImage(img, -w2 / 2, -h2 / 2, w2, h2);
+                c.restore();
+            } else {   // 立绘没加载完，回退色块
+                c.fillStyle = this._tierColor(e.cfg.type, tier);
                 c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
             }
-            // 高 tier 普通怪加深色描边（剪影增强可读性）
-            if (tier > 0.4 && e.cfg.type !== 'boss' && e.cfg.type !== 'mini_boss') {
-                c.strokeStyle = 'rgba(120,0,20,0.8)'; c.lineWidth = 2 + tier * 3;
-                if (e.cfg.type === 'brute') { this._roundRect(c, x - r, y - r*0.6, r*2, r*1.2, 8); c.stroke(); }
-                else { c.beginPath(); c.arc(x, y, r, 0, Math.PI*2); c.stroke(); }
-            }
-            // Boss 血条：按 isWaveBoss 判断(本关关底 Boss,与类型无关——L1/L2 的 BRUTE Boss 也有,普通 brute 小怪没有)。
+            // Boss 血条：先收集，循环后统一画在最上层(身体参与遮挡但血条始终可见)。
+            // isWaveBoss=本关关底 Boss(与类型无关——L1/L2 的 BRUTE Boss 也有,普通 brute 小怪没有)。
             if (e.isWaveBoss) {
-                const bw = Math.max(r * 2.4, 90), bh = 8, by = y - r - 18;
-                const ratio = Math.max(0, e.hp / e.maxHp);
-                c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillRect(x - bw/2 - 1, by - 1, bw + 2, bh + 2);   // 黑边底
-                c.fillStyle = 'rgba(60,15,15,0.9)'; c.fillRect(x - bw/2, by, bw, bh);                  // 空槽
-                c.fillStyle = ratio > 0.3 ? '#FF5C7A' : '#FFD23C'; c.fillRect(x - bw/2, by, bw * ratio, bh); // 血(低血变黄)
+                bossBars.push({ x, by: y - r - 18, bw: Math.max(r * 2.4, 90), ratio: Math.max(0, e.hp / e.maxHp) });
             }
+        }
+        // Boss 血条统一画在所有怪之上(身体被正常遮挡,但血条始终可见——关底目标可读性)
+        const bh = 8;
+        for (const b of bossBars) {
+            c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillRect(b.x - b.bw/2 - 1, b.by - 1, b.bw + 2, bh + 2);   // 黑边底
+            c.fillStyle = 'rgba(60,15,15,0.9)'; c.fillRect(b.x - b.bw/2, b.by, b.bw, bh);                  // 空槽
+            c.fillStyle = b.ratio > 0.3 ? '#FF5C7A' : '#FFD23C'; c.fillRect(b.x - b.bw/2, b.by, b.bw * b.ratio, bh); // 血(低血变黄)
         }
     }
 
@@ -230,61 +389,75 @@ export class Renderer {
 
     _bullets(c, w) {
         const col = weaponStat(w.state.weaponLevel).color;
+        c.save();
+        c.globalCompositeOperation = 'lighter';   // 子弹发光叠加，在暗背景上跳出来
         for (const b of w.bullets) {
             const x = this.tx(b.x), y = this.ty(b.y);
             // 拖尾沿飞行方向（飞向目标怪/门），而非固定竖直——与"自动弹幕"一致
             const dx = this.tx(b.tx) - x, dy = this.ty(b.ty) - y;
             const d = Math.hypot(dx, dy) || 1;
-            const len = (b.weak ? 1.8 : 3) * b.width;
+            const len = (b.weak ? 2.2 : 4) * b.width;
             const tailX = x - dx / d * len, tailY = y - dy / d * len;
-            c.globalAlpha = b.weak ? 0.4 : 1;
-            c.strokeStyle = col; c.lineWidth = b.width * (b.weak ? 0.55 : 1);
+            const lw = b.width * (b.weak ? 0.6 : 1.1);
+            c.globalAlpha = b.weak ? 0.45 : 1;
+            // 外层光晕
+            c.strokeStyle = col; c.lineCap = 'round';
+            c.lineWidth = lw * 2.4; c.globalAlpha *= 0.35;
             c.beginPath(); c.moveTo(x, y); c.lineTo(tailX, tailY); c.stroke();
-            c.globalAlpha = 1;
+            // 内核
+            c.globalAlpha = b.weak ? 0.6 : 1;
+            c.lineWidth = lw;
+            c.beginPath(); c.moveTo(x, y); c.lineTo(tailX, tailY); c.stroke();
+            // 弹头亮点
+            c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, lw * 0.6, 0, Math.PI*2); c.fill();
         }
+        c.restore();
+        c.globalAlpha = 1;
     }
 
     _player(c, w) {
         const baseX = this.tx(w.playerX), baseY = this.ty(PLAYER_Y);
         const moving = w.isMoving;
-        const col = moving ? '#2a7d72' : '#3DE0C8';
-        const colDark = moving ? '#1d5c54' : '#2bb3a0';   // 腿/暗部
-        // Count Masters 风一群小人：① 圆头+收窄身体+两条腿剪影(像人不像方块) ② 按屏幕 y 排序,
-        // 后画(更靠下=更近)的盖住前面→重叠遮挡出"人多"密度 ③ 每人相位错开的 sin 上下颠+跑动摆腿→一团此起彼伏=活的。
-        const layout = personLayout(w.state.personCount);
-        // 计算每个小人屏幕位置 + 个体相位,按 py 升序排(先画上/远的,后画下/近的盖住)
+        // 一群小人(Count Masters 风)：① 按屏幕 y 排序,后画(更靠下=更近)的盖住前面→重叠出"人多"密度
+        // ② 每人相位错开的 sin 上下颠→一团此起彼伏=活的 ③ idle 浮动/移动摆动全代码补间(美术只给静态立绘)。
+        // 人数动态缩放：1 人时最大(170)，人多时缩小(底 90)，避免一堆大立绘糊成一片。
+        const cnt = w.state.personCount;
+        const groupDia = Math.max(90, 170 - Math.log2(Math.max(1, cnt)) * 16);
+        const layout = personLayout(cnt);
         const dudes = layout.map((p, i) => {
-            const phase = i * 1.7;                          // 个体相位错开(质数感间隔),群体此起彼伏
+            const phase = i * 1.7;                          // 个体相位错开(质数感间隔)
             const bob = Math.sin(this.t * 8 + phase) * 1.5 * p.scale;   // 上下颠
             return { px: baseX + p.dx, py: baseY - p.dy + bob, s: p.scale, phase };
         }).sort((a, b) => a.py - b.py);
-        for (const d of dudes) this._drawDude(c, d.px, d.py, d.s, col, colDark, moving, d.phase);
+        for (const d of dudes) this._drawDude(c, d.px, d.py, d.s * groupDia, moving, d.phase);
         // 移动中显式提示"火力弱"
         if (moving) {
-            c.fillStyle = 'rgba(255,180,60,0.9)'; c.textAlign = 'center'; c.textBaseline = 'bottom';
-            c.font = 'bold 22px sans-serif'; c.fillText('移动中·火力弱', baseX, baseY - 60);
+            c.fillStyle = 'rgba(255,180,60,0.95)'; c.textAlign = 'center'; c.textBaseline = 'bottom';
+            c.font = 'bold 22px sans-serif'; c.fillText('移动中·火力弱', baseX, baseY - groupDia * 0.7);
         }
     }
 
-    // 画单个小人(Count Masters 剪影)：两条腿(跑动时左右摆) + 收窄身体 + 圆头。纯色填充,简洁。
-    _drawDude(c, x, y, s, col, colDark, moving, phase) {
-        const swing = moving ? Math.sin(this.t * 14 + phase) * 4 * s : 0;   // 跑动摆腿
-        // 腿(两条,暗色,左右交替摆)
-        c.strokeStyle = colDark; c.lineWidth = 3 * s; c.lineCap = 'round';
-        c.beginPath();
-        c.moveTo(x, y + 2 * s); c.lineTo(x - 4 * s + swing, y + 12 * s);
-        c.moveTo(x, y + 2 * s); c.lineTo(x + 4 * s - swing, y + 12 * s);
-        c.stroke();
-        // 身体(上窄下宽的胶囊剪影)
-        c.fillStyle = col;
-        c.beginPath();
-        c.moveTo(x - 5 * s, y + 4 * s);
-        c.lineTo(x - 3.5 * s, y - 6 * s);
-        c.lineTo(x + 3.5 * s, y - 6 * s);
-        c.lineTo(x + 5 * s, y + 4 * s);
-        c.closePath(); c.fill();
-        // 圆头
-        c.beginPath(); c.arc(x, y - 10 * s, 5.5 * s, 0, Math.PI * 2); c.fill();
+    // 画单个小人：真实 player 立绘(脚下加椭圆阴影让其"落地")。移动时轻微左右摆动(不旋转,避免朝向错觉)。
+    _drawDude(c, x, y, dia, moving, phase) {
+        // 脚下阴影(半透明椭圆,防浮空)
+        c.save();
+        c.fillStyle = 'rgba(0,0,0,0.28)';
+        c.beginPath(); c.ellipse(x, y + dia * 0.42, dia * 0.30, dia * 0.10, 0, 0, Math.PI * 2); c.fill();
+        c.restore();
+        // 立绘(移动时整体轻微水平摆动模拟跑动,不旋转——旋转会让正面立绘显得歪/朝向怪)
+        const img = this.tex.player;
+        if (img) {
+            const sway = moving ? Math.sin(this.t * 14 + phase) * 2.5 : 0;
+            c.save();
+            c.translate(x + sway, y);
+            const ar = img.width / img.height;
+            const w2 = ar >= 1 ? dia : dia * ar, h2 = ar >= 1 ? dia / ar : dia;
+            c.drawImage(img, -w2 / 2, -h2 / 2, w2, h2);
+            c.restore();
+        } else {   // 回退色块
+            c.fillStyle = moving ? '#2a7d72' : '#3DE0C8';
+            c.beginPath(); c.arc(x, y, dia * 0.35, 0, Math.PI * 2); c.fill();
+        }
     }
 
     _hud(c, w) {
