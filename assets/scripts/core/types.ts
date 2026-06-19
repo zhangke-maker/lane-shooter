@@ -28,16 +28,19 @@ export const NAMED_WEAPON_MAX = WeaponLevel.LASER;   // 最高有专属外观的
 export const WEAPON_NAMES = ['手枪', '冲锋枪', '步枪', '机枪', '重机枪', '激光'];
 export interface WeaponStat { damage: number; bulletWidth: number; color: string; }
 // 前6档专属外观（伤害 2^level）。武器无上限升级：超过激光(5)后纯涨伤害(2^level)、外观沿用激光。
+// 数值全链 ×100：血量/伤害放大 100 倍，给整数表达留"分辨率"，
+// 避免 base.hp 太小时 ÷HORDE_DENSITY 后被 round/地板(max(1))扭曲、破坏总威胁守恒。
+// 全部等比放大 → 难度数学等价，仅精度提升。
 export const WEAPON_STATS: WeaponStat[] = [
-    { damage: 1,  bulletWidth: 4,  color: '#FFFFFF' },   // 手枪 白
-    { damage: 2,  bulletWidth: 6,  color: '#F9E784' },   // 冲锋枪 黄
-    { damage: 4,  bulletWidth: 8,  color: '#F5A623' },   // 步枪 橙
-    { damage: 8,  bulletWidth: 12, color: '#E5484D' },   // 机枪 红
-    { damage: 16, bulletWidth: 16, color: '#9B59E0' },   // 重机枪 紫
-    { damage: 32, bulletWidth: 20, color: '#3FE0D0' },   // 激光 青
+    { damage: 100,  bulletWidth: 4,  color: '#FFFFFF' },   // 手枪 白
+    { damage: 200,  bulletWidth: 6,  color: '#F9E784' },   // 冲锋枪 黄
+    { damage: 400,  bulletWidth: 8,  color: '#F5A623' },   // 步枪 橙
+    { damage: 800,  bulletWidth: 12, color: '#E5484D' },   // 机枪 红
+    { damage: 1600, bulletWidth: 16, color: '#9B59E0' },   // 重机枪 紫
+    { damage: 3200, bulletWidth: 20, color: '#3FE0D0' },   // 激光 青
 ];
-// 武器伤害（无上限）= 2^level。超过专属档(5)继续翻倍。
-export function weaponDamage(level: number): number { return Math.pow(2, level); }
+// 武器伤害（无上限）= 2^level × 100。超过专属档(5)继续翻倍。
+export function weaponDamage(level: number): number { return Math.pow(2, level) * 100; }
 // 武器外观（颜色/弹宽）：超过专属档取最高档(激光)外观。
 export function weaponStat(level: number): WeaponStat {
     return WEAPON_STATS[Math.min(level, NAMED_WEAPON_MAX)];
@@ -100,11 +103,11 @@ export interface EnemyConfig {
 }
 
 export const ENEMY_BASE: Record<EnemyType, EnemyConfig> = {
-    [EnemyType.GRUNT]:     { type: EnemyType.GRUNT,     hp: 5,   speed: 120, damage: 5,  scoreValue: 10,  radius: 22 },
-    [EnemyType.RUNNER]:    { type: EnemyType.RUNNER,    hp: 3,   speed: 220, damage: 5,  scoreValue: 15,  radius: 18 },
-    [EnemyType.BRUTE]:     { type: EnemyType.BRUTE,     hp: 30,  speed: 70,  damage: 15, scoreValue: 50,  radius: 34 },
-    [EnemyType.MINI_BOSS]: { type: EnemyType.MINI_BOSS, hp: 120, speed: 50,  damage: 25, scoreValue: 150, radius: 44 },
-    [EnemyType.BOSS]:      { type: EnemyType.BOSS,      hp: 400, speed: 35,  damage: 40, scoreValue: 500, radius: 60 },
+    [EnemyType.GRUNT]:     { type: EnemyType.GRUNT,     hp: 500,   speed: 120, damage: 500,  scoreValue: 10,  radius: 22 },
+    [EnemyType.RUNNER]:    { type: EnemyType.RUNNER,    hp: 300,   speed: 220, damage: 500,  scoreValue: 15,  radius: 18 },
+    [EnemyType.BRUTE]:     { type: EnemyType.BRUTE,     hp: 3000,  speed: 70,  damage: 1500, scoreValue: 50,  radius: 34 },
+    [EnemyType.MINI_BOSS]: { type: EnemyType.MINI_BOSS, hp: 12000, speed: 50,  damage: 2500, scoreValue: 150, radius: 44 },
+    [EnemyType.BOSS]:      { type: EnemyType.BOSS,      hp: 40000, speed: 35,  damage: 4000, scoreValue: 500, radius: 60 },
 };
 
 // ---- 玩家状态 ----
@@ -118,7 +121,7 @@ export interface PlayerState {
 }
 
 export function makeInitialState(): PlayerState {
-    return { hp: 100, maxHp: 100, weaponLevel: WeaponLevel.PISTOL, personCount: 1, score: 0, level: 1 };
+    return { hp: 10000, maxHp: 10000, weaponLevel: WeaponLevel.PISTOL, personCount: 1, score: 0, level: 1 };
 }
 
 // 当前 DPS = 武器伤害 × 人数 × 射速。水晶血量按此换算

@@ -49,7 +49,7 @@ export const LEVEL_DEFS: LevelDef[] = [
     {
         levelIndex: 1, durationSec: 26,
         enemyPool: [EnemyType.GRUNT],
-        bossType: EnemyType.BRUTE, bossHp: 120,
+        bossType: EnemyType.BRUTE, bossHp: 12000,
         hordeDensity: 24,   // L1 怪极脆,用低值(原8)避开血量地板破坏守恒;随全局×3同步到24保持原比例
         // 教学关：给~5秒抓首把武器(首道具便宜)，之后怪海迅速压上——逼"刷 vs 守"取舍，不能无脑刷满。
         // 道具耗时加大(A+C)：刷满要冒漏怪风险且更久，治"前期轻松刷满质变碾压"。
@@ -71,7 +71,7 @@ export const LEVEL_DEFS: LevelDef[] = [
     {
         levelIndex: 2, durationSec: 30,
         enemyPool: [EnemyType.GRUNT, EnemyType.RUNNER],
-        bossType: EnemyType.BRUTE, bossHp: 1200,
+        bossType: EnemyType.BRUTE, bossHp: 120000,
         gateSeconds: { [GateType.WEAPON_UP]: 12, [GateType.PERSON_UP]: 10 },
         threat: [
             { atSec: 0, spawnRate: 0.68, hpMul: 30 },
@@ -88,7 +88,7 @@ export const LEVEL_DEFS: LevelDef[] = [
     {
         levelIndex: 3, durationSec: 42,
         enemyPool: [EnemyType.GRUNT, EnemyType.RUNNER],
-        bossType: EnemyType.MINI_BOSS, bossHp: 6000,
+        bossType: EnemyType.MINI_BOSS, bossHp: 600000,
         gateSeconds: { [GateType.WEAPON_UP]: 20, [GateType.PERSON_UP]: 16 },
         threat: [
             { atSec: 0, spawnRate: 1.19, hpMul: 171 },
@@ -101,7 +101,7 @@ export const LEVEL_DEFS: LevelDef[] = [
     {
         levelIndex: 4, durationSec: 54,
         enemyPool: [EnemyType.RUNNER, EnemyType.BRUTE],
-        bossType: EnemyType.MINI_BOSS, bossHp: 30000,
+        bossType: EnemyType.MINI_BOSS, bossHp: 3000000,
         gateSeconds: { [GateType.WEAPON_UP]: 22, [GateType.PERSON_UP]: 18 },
         threat: [
             { atSec: 0, spawnRate: 1.26, hpMul: 452 },
@@ -113,7 +113,7 @@ export const LEVEL_DEFS: LevelDef[] = [
     {
         levelIndex: 5, durationSec: 66,
         enemyPool: [EnemyType.RUNNER, EnemyType.BRUTE],
-        bossType: EnemyType.BOSS, bossHp: 120000,
+        bossType: EnemyType.BOSS, bossHp: 12000000,
         gateSeconds: { [GateType.WEAPON_UP]: 24, [GateType.PERSON_UP]: 20 },
         threat: [
             { atSec: 0, spawnRate: 0.76, hpMul: 7484 },
