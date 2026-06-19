@@ -389,7 +389,7 @@ export class GameWorld {
             e.y -= e.cfg.speed * dt;
             if (e.y < BASELINE_Y) {
                 if (e.isWaveBoss) {
-                    // Boss 漏到底线：吃掉【最大血量的 80%】(固定值,如 maxHp100→扣80) + 直接算过关
+                    // Boss 漏到底线：吃掉【最大血量的 80%】(按比例,如 maxHp10000→扣8000) + 直接算过关
                     // (Boss 没被打死也通关,避免卡关)。残血时被扣 80 可能直接死→game over。
                     this._damagePlayer(this.state.maxHp * 0.8, ev);
                     ev.push({ kind: 'enemy_reached', damage: e.cfg.damage });

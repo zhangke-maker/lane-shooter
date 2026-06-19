@@ -50,14 +50,13 @@ export const LEVEL_DEFS: LevelDef[] = [
         levelIndex: 1, durationSec: 26,
         enemyPool: [EnemyType.GRUNT],
         bossType: EnemyType.BRUTE, bossHp: 12000,
-        hordeDensity: 24,   // L1 怪极脆,用低值(原8)避开血量地板破坏守恒;随全局×3同步到24保持原比例
+        hordeDensity: 24,   // L1 用低密度;base.hp 已×100,÷24 后无取整失真,守恒成立。
         // 教学关：给~5秒抓首把武器(首道具便宜)，之后怪海迅速压上——逼"刷 vs 守"取舍，不能无脑刷满。
         // 道具耗时加大(A+C)：刷满要冒漏怪风险且更久，治"前期轻松刷满质变碾压"。
         gateSeconds: { [GateType.WEAPON_UP]: 7, [GateType.PERSON_UP]: 6 },
-        // 第1关按【裸装手枪DPS8】基准:开局怪海远低于8(给刷首把武器的活路),末段升到~8(裸装勉强,逼升级)。
-        // 怪海/秒 = spawnRate×baseHp(5)×hpMul。开局~3/秒, 末段~8/秒。
-        // hpMul ×0.8(原 3.66/4.03/3.48)：降低 L1 整体难度。配合开局预置怪在半屏(world._beginLevel)，
-        // 堵"开局无脑跑去长时间刷道具"的投机策略——一上来就得先守右路打怪,不能开局摆烂刷。
+        // 第1关按【裸装手枪】基准:开局怪海给刷首把武器的活路,末段加压逼升级。
+        // 怪海/秒 ∝ spawnRate×baseHp(grunt 500)×hpMul。hpMul 实玩定稿为 2(关内拍平)。
+        // 配合开局预置怪在半屏(world._beginLevel),堵"开局无脑跑去长时间刷道具"的投机策略——一上来就得先守右路打怪。
         threat: [
             { atSec: 0, spawnRate: 0.30, hpMul: 2 },
             { atSec: 8, spawnRate: 0.55, hpMul: 2 },

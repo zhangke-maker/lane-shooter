@@ -71,7 +71,8 @@ export function personLayout(count: number): { dx: number; dy: number; scale: nu
         // 关键:按【该排实际人数】居中(非满列数),否则人少时整堆偏左、与 playerX 判定中心错位。
         const inThisRow = Math.min(cols, count - row * cols);
         let dx = (col - (inThisRow - 1) / 2) * PERSON_SPACING;   // 该排居中对齐 → 单人 dx=0
-        if (row % 2 === 1 && inThisRow === cols) dx += PERSON_SPACING * 0.5;   // 满排时奇数排半格错位(六边形)
+        // 满排时奇数排六边形错位：整排 ±0.25 格对称错开(非 +0.5 单向),保证该排重心仍落在 playerX,不偏右。
+        if (inThisRow === cols) dx += (row % 2 === 1 ? 1 : -1) * PERSON_SPACING * 0.25;
         // dy:让人堆整体以 playerX 为中心(第0排在最前=最下,往上堆),整堆纵向也大致居中
         let dy = (row - (rows - 1) / 2) * rowH;   // 行居中,堆以中心对称
         // 确定性抖动(按 index 生成,打破规则感)→ "人堆"自然;单人(count=1)不抖,保证正好在 playerX

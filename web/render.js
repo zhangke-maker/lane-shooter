@@ -103,14 +103,17 @@ export class Renderer {
             if (e.kind === 'enemy_killed') {
                 // 死亡特效（黑底发光图，Additive）：大怪 death_big，杂兵 death_small。
                 // 画在怪【真实死亡坐标】(事件带 x/y)——即兵线处，随 DPS 强弱前后移动，不固定。
+                // fxX clamp 进右路核心框[18,349]：怪立绘在 draw 时被夹进红框,特效坐标同样夹住才不脱节
+                //（边缘死亡时爆炸/火花跟着尸体,不漂到墙外）。核心↔屏幕 1:1(tx(x)=x+375,框 screen[393,724]→core[18,349])。
+                const fxX = Math.max(18, Math.min(349, e.x));
                 const big = e.cfg.type === 'brute' || e.cfg.type === 'mini_boss' || e.cfg.type === 'boss';
                 this.deaths.push({
-                    x: e.x + (Math.random()-0.5)*20, y: e.y + (Math.random()-0.5)*20,
+                    x: fxX + (Math.random()-0.5)*20, y: e.y + (Math.random()-0.5)*20,
                     life: 1, tex: big ? 'death_big' : 'death_small', dia: (big ? e.cfg.radius*7 : e.cfg.radius*5),
                 });
                 // 击杀火花：在怪死亡位置出几粒
                 for (let i = 0; i < 5; i++)
-                    this.sparks.push({ x: e.x + (Math.random()-0.5)*40, y: e.y + (Math.random()-0.5)*40,
+                    this.sparks.push({ x: fxX + (Math.random()-0.5)*40, y: e.y + (Math.random()-0.5)*40,
                                        vx: (Math.random()-0.5)*8, vy: 4+Math.random()*6, life: 1, col: '#FFD86B' });
             } else if (e.kind === 'player_hit' && e.hp < this._lastHp) {
                 // 掉血时闪红+震屏
@@ -334,7 +337,8 @@ export class Renderer {
         const BOX_L = 393, BOX_R = 724;
         for (const e of ordered) {
             // 显示直径按怪类型固定(Boss 明确大),Boss 再按血量比例微调(残血 Boss 也保持大)。
-            const dia = ENEMY_DIA[e.cfg.type] || 95;
+            // 直接查表不兜底：5 种怪都在 ENEMY_DIA 内,缺键=程序错应当暴露(新增怪种忘填表会立即 undefined 报错,不静默缩成小不点)。
+            const dia = ENEMY_DIA[e.cfg.type];
             const visHalf = dia * 0.30;   // 立绘留白，身体实际视觉半宽≈直径×0.30
             const y = this.ty(e.y);
             // x 按真实视觉半宽 clamp 进红框，立绘边缘不越界
@@ -357,7 +361,7 @@ export class Renderer {
                 c.drawImage(img, -w2 / 2, -h2 / 2, w2, h2);
                 c.restore();
             } else {   // 立绘没加载完，回退色块
-                c.fillStyle = this._tierColor(e.cfg.type, 1);
+                c.fillStyle = this._enemyColor(e.cfg.type);
                 c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
             }
             // Boss 血条：先收集，循环后统一画在最上层(身体参与遮挡但血条始终可见)。
@@ -375,17 +379,11 @@ export class Renderer {
         }
     }
 
-    // 怪颜色按强度 tier 往红移（越硬越红，可读性）
-    _tierColor(type, tier) {
-        const base = ENEMY_COLORS[type] || '#fff';
-        if (type === 'boss' || type === 'mini_boss') return base;
-        // 基础色 → 高威胁红，线性插值
-        const n = parseInt(base.slice(1), 16);
-        const br = (n>>16)&255, bg = (n>>8)&255, bb = n&255;
-        const r = Math.round(br + (220 - br) * tier);
-        const g = Math.round(bg + (30 - bg) * tier);
-        const b = Math.round(bb + (40 - bb) * tier);
-        return `rgb(${r},${g},${b})`;
+    // 怪回退色块的颜色(立绘没加载完时用)。Boss/miniboss 用本色,杂兵统一高威胁红
+    //(原按 tier 插值,数值×100 后 tier 恒=1 → 杂兵恒为红端,插值是死算式,已化简掉)。
+    _enemyColor(type) {
+        if (type === 'boss' || type === 'mini_boss') return ENEMY_COLORS[type];
+        return 'rgb(220,30,40)';
     }
 
     _bullets(c, w) {
