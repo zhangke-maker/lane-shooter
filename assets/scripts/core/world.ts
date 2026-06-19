@@ -39,7 +39,7 @@ const SLIDE_SPEED = 400;
 
 // 世界事件（渲染/UI/音效消费）
 export type WorldEvent =
-    | { kind: 'enemy_killed'; cfg: EnemyConfig }
+    | { kind: 'enemy_killed'; cfg: EnemyConfig; x: number; y: number }
     | { kind: 'enemy_reached'; damage: number }
     | { kind: 'gate_cleared'; type: GateType; label: string }
     | { kind: 'weapon_up'; level: number }
@@ -66,9 +66,9 @@ const MOVE_FIRE_PENALTY = 0.5;
 
 
 // 怪海密度倍率：出怪量 ×N、单只血 ÷N（总威胁守恒——第一排总血量不变）。N 越大越"满屏怪海"。
-// 72：填满右路 + 数量足够多显得密(用户要求)。单只更薄,总血量仍按 threat hpMul 设定不变。
-// ⚠️ base.hp 基数小时 ÷N 后被 round/地板(max(1))扭曲、破坏守恒 → 待"基础数值×100"修复(见 spec)。
-const HORDE_DENSITY = 72;
+// 36：怪数量适中(用户反馈 72 太密,减半)。总威胁守恒(数量÷2、单只血×2),难度不变、只是怪变少变厚。
+// base.hp 已 ×100，÷N 后无取整失真，守恒成立。
+const HORDE_DENSITY = 36;
 const VISUAL_BULLET_CAP = 24;   // 每次发弹的最大子弹数(纯视觉)——人数无上限,封顶防超多人时子弹爆炸
 
 // 「第一排」带宽（px）：右路火力只打最靠下这一带内的怪（约一个怪身高），逐排往上推平。
@@ -169,12 +169,12 @@ export class GameWorld {
         // 血量 ÷HORDE_DENSITY 与正常出怪一致(否则单只血 ×8 变厚,渲染按 maxHp 染红像高级怪——已修 bug)。
         if (this.state.level === 1 && this._def) {
             const hpMul0 = this._def.threat[0].hpMul / (this._def.hordeDensity ?? HORDE_DENSITY);
-            const midY = (SCREEN_TOP + BASELINE_Y) / 2;
             const type = this._def.enemyPool[0];
-            for (let i = 0; i < 24; i++) {
-                // 从半屏(midY)均匀铺到屏顶(SCREEN_TOP),带少量抖动
-                const t = i / 23;
-                const y = midY + (SCREEN_TOP - midY) * t + (this._rng.next() - 0.5) * 40;
+            // 怪海从掉血线(BASELINE_Y)一直铺到屏顶 → 开局就铺满上方~2/3、压到主角小队头顶(对峙感)。
+            const N = 40;
+            for (let i = 0; i < N; i++) {
+                const t = i / (N - 1);
+                const y = BASELINE_Y + (SCREEN_TOP - BASELINE_Y) * t + (this._rng.next() - 0.5) * 40;
                 this._spawnPreseed(type, hpMul0, y);
             }
         }
@@ -450,7 +450,7 @@ export class GameWorld {
     // 处理一只怪死亡的【副作用】（计分/事件/通关），不负责从数组移除——移除由调用方批量做。
     private _onEnemyKilled(e: Enemy, ev: WorldEvent[]) {
         this.state.score += e.cfg.scoreValue;
-        ev.push({ kind: 'enemy_killed', cfg: e.cfg });
+        ev.push({ kind: 'enemy_killed', cfg: e.cfg, x: e.x, y: e.y });   // 带死亡真实坐标→特效画在兵线处(随DPS前后移)
         ev.push({ kind: 'score', score: this.state.score });
 
         // 杀掉波次Boss（时间轴最后一个怪）→ 通关本关。与怪类型无关，避免漏判 brute 类波次Boss

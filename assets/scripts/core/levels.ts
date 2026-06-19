@@ -59,9 +59,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         // hpMul ×0.8(原 3.66/4.03/3.48)：降低 L1 整体难度。配合开局预置怪在半屏(world._beginLevel)，
         // 堵"开局无脑跑去长时间刷道具"的投机策略——一上来就得先守右路打怪,不能开局摆烂刷。
         threat: [
-            { atSec: 0, spawnRate: 0.30, hpMul: 2.20 },
-            { atSec: 8, spawnRate: 0.55, hpMul: 2.42 },
-            { atSec: 26, spawnRate: 0.90, hpMul: 2.09 },
+            { atSec: 0, spawnRate: 0.30, hpMul: 2 },
+            { atSec: 8, spawnRate: 0.55, hpMul: 2 },
+            { atSec: 26, spawnRate: 0.90, hpMul: 2 },
         ],
     },
     // ── 第2关：30s。轻度加压(原零难度)。怪血 ×2(原≈6.6→13)：微压力但不卡刷道具节奏。──
@@ -75,8 +75,8 @@ export const LEVEL_DEFS: LevelDef[] = [
         gateSeconds: { [GateType.WEAPON_UP]: 12, [GateType.PERSON_UP]: 10 },
         threat: [
             { atSec: 0, spawnRate: 0.68, hpMul: 30 },
-            { atSec: 15, spawnRate: 0.92, hpMul: 33 },
-            { atSec: 30, spawnRate: 1.22, hpMul: 33 },
+            { atSec: 15, spawnRate: 0.92, hpMul: 30 },
+            { atSec: 30, spawnRate: 1.22, hpMul: 30 },
         ],
     },
     // ── 第3关：42s。险过关——目标 HP 打到见底但能过。──
@@ -91,9 +91,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.MINI_BOSS, bossHp: 600000,
         gateSeconds: { [GateType.WEAPON_UP]: 20, [GateType.PERSON_UP]: 16 },
         threat: [
-            { atSec: 0, spawnRate: 1.19, hpMul: 171 },
-            { atSec: 20, spawnRate: 1.68, hpMul: 182 },
-            { atSec: 42, spawnRate: 2.28, hpMul: 179 },
+            { atSec: 0, spawnRate: 1.19, hpMul: 90 },
+            { atSec: 20, spawnRate: 1.68, hpMul: 90 },
+            { atSec: 42, spawnRate: 2.28, hpMul: 90 },
         ],
     },
     // ── 第4关：54s。【难度墙/skill gate】——第一排清不动+清不完，必死。──
@@ -104,9 +104,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.MINI_BOSS, bossHp: 3000000,
         gateSeconds: { [GateType.WEAPON_UP]: 22, [GateType.PERSON_UP]: 18 },
         threat: [
-            { atSec: 0, spawnRate: 1.26, hpMul: 452 },
-            { atSec: 26, spawnRate: 1.8, hpMul: 475 },
-            { atSec: 54, spawnRate: 2.42, hpMul: 471 },
+            { atSec: 0, spawnRate: 1.26, hpMul: 300 },
+            { atSec: 26, spawnRate: 1.8, hpMul: 300 },
+            { atSec: 54, spawnRate: 2.42, hpMul: 300 },
         ],
     },
     // ── 第5关：66s。终墙(中等偏上玩家在 L4 已死,本关仅占位/极限高手才到)。hpMul ×20。──
@@ -116,9 +116,9 @@ export const LEVEL_DEFS: LevelDef[] = [
         bossType: EnemyType.BOSS, bossHp: 12000000,
         gateSeconds: { [GateType.WEAPON_UP]: 24, [GateType.PERSON_UP]: 20 },
         threat: [
-            { atSec: 0, spawnRate: 0.76, hpMul: 7484 },
-            { atSec: 30, spawnRate: 1.08, hpMul: 7900 },
-            { atSec: 66, spawnRate: 1.43, hpMul: 7954 },
+            { atSec: 0, spawnRate: 0.76, hpMul: 1000 },
+            { atSec: 30, spawnRate: 1.08, hpMul: 1000 },
+            { atSec: 66, spawnRate: 1.43, hpMul: 1000 },
         ],
     },
 ];

@@ -6,10 +6,10 @@
 export const LANE_LEFT_X = -190;   // 左路（道具）中心
 export const LANE_RIGHT_X = 190;   // 右路（怪物）中心
 export const SCREEN_TOP = 667;
-export const PLAYER_Y = -520;
+export const PLAYER_Y = -470;   // 主角小队 y(小队占屏幕下方~1/3,与怪海分庭抗礼)
 export const PLAYER_MIN_X = LANE_LEFT_X;
 export const PLAYER_MAX_X = LANE_RIGHT_X;
-export const BASELINE_Y = -540;    // 怪到此 Y 触发扣血
+export const BASELINE_Y = -400;    // 怪到此 Y 触发扣血(贴到主角小队头顶才扣血=短兵相接,怪怼脸上)
 export const BULLET_SPEED = 1200;
 export const SHOOT_INTERVAL = 0.12; // 固定射速（秒/发）
 
@@ -54,28 +54,35 @@ export function weaponName(level: number): string {
 // 加人翻倍无上限：1→2→4→8→16→32→64…（每次 ×2，与武器升级对称）。人数纯属战力(DPS)+视觉,无封顶。
 export const PERSON_BASE_RADIUS = 14;   // 单个小人基础半径(占位用,渲染按 scale 缩放)
 
-// 动态布局：把任意 count 个小人以玩家为中心【圆形同心环】铺开，返回每个的 [dx, dy, scale]。
-// 渲染画小人 + 弹道发射点共用(同源避免错位)。设计：
-//  - 人越多单体越小(scale 随 count 衰减,下限 0.4,不会小到看不见),靠重叠+占地扩大表现"人多"。
-//  - 整体占地半径随 sqrt(count) 增长(占地面积 ∝ 人数,符合"角色占地面积随人数增加")。
-//  - 同心环:中心1个,外面一圈圈,每环周长容纳的人数随半径增长。
+// 动态布局：Count Masters 式「人堆」——横向铺满泳道宽 + 奇偶排六边形错位 + 确定性抖动。
+// (调研结论：竖屏/底部/横向铺满/人挨人 场景,行填充优于圆形螺旋。)返回每个的 [dx, dy, scale]。
+//  - 横向先铺满一排(列数=泳道宽/间距),再往后(dy 负方向=屏幕上方)堆排 → 天然占满泳道宽。
+//  - 奇数排横向半格错位(六边形堆叠)+ 每人确定性抖动(按 index 哈希,不每帧 random)→ 不规则人堆,非网格。
+//  - 单体不缩放(固定 scale=1),人多就往后多堆排(符合该品类惯例:占地表现数量,不缩小单体)。
+const PERSON_SPACING = 42;   // 相邻小人间距(略小于单体显示尺寸→人挨人部分重叠,人堆感)
+const PERSON_LANE_W = 300;   // 小队可铺开宽度(≈一条泳道宽,一排约7列)
 export function personLayout(count: number): { dx: number; dy: number; scale: number }[] {
     const out: { dx: number; dy: number; scale: number }[] = [];
     if (count <= 0) return out;
-    // 单体缩放:1 人时 0.85,人越多越小,下限 0.4。用 1/sqrt 衰减。
-    const scale = Math.max(0.4, Math.min(0.85, 1.2 / Math.sqrt(count)));
-    const unit = PERSON_BASE_RADIUS * scale * 1.7;   // 相邻小人间距(略大于直径,密集但能分辨)
-    out.push({ dx: 0, dy: 0, scale });               // 中心 1 个
-    let placed = 1, ring = 1;
-    while (placed < count) {
-        const ringR = unit * ring;                    // 第 ring 环半径
-        const cap = Math.floor((2 * Math.PI * ringR) / unit);   // 本环按周长能放几个
-        const n = Math.min(cap, count - placed);
-        for (let i = 0; i < n; i++) {
-            const a = (i / n) * Math.PI * 2 + ring * 0.6;   // 每环旋转错位,避免径向对齐
-            out.push({ dx: Math.cos(a) * ringR, dy: Math.sin(a) * ringR, scale });
+    const cols = Math.max(1, Math.round(PERSON_LANE_W / PERSON_SPACING));   // 一排最多几列
+    const rowH = PERSON_SPACING * 0.87;   // 六边形错排行距(更密)
+    const rows = Math.ceil(count / cols);
+    for (let i = 0; i < count; i++) {
+        const row = Math.floor(i / cols), col = i % cols;
+        // 关键:按【该排实际人数】居中(非满列数),否则人少时整堆偏左、与 playerX 判定中心错位。
+        const inThisRow = Math.min(cols, count - row * cols);
+        let dx = (col - (inThisRow - 1) / 2) * PERSON_SPACING;   // 该排居中对齐 → 单人 dx=0
+        if (row % 2 === 1 && inThisRow === cols) dx += PERSON_SPACING * 0.5;   // 满排时奇数排半格错位(六边形)
+        // dy:让人堆整体以 playerX 为中心(第0排在最前=最下,往上堆),整堆纵向也大致居中
+        let dy = (row - (rows - 1) / 2) * rowH;   // 行居中,堆以中心对称
+        // 确定性抖动(按 index 生成,打破规则感)→ "人堆"自然;单人(count=1)不抖,保证正好在 playerX
+        if (count > 1) {
+            const h1 = Math.sin(i * 12.9898) * 43758.5453; const r1 = h1 - Math.floor(h1);
+            const h2 = Math.sin(i * 78.233) * 43758.5453;  const r2 = h2 - Math.floor(h2);
+            dx += (r1 - 0.5) * PERSON_SPACING * 0.5;
+            dy += (r2 - 0.5) * PERSON_SPACING * 0.5;
         }
-        placed += n; ring++;
+        out.push({ dx, dy, scale: 1 });
     }
     return out;
 }

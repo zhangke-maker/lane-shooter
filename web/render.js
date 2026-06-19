@@ -97,15 +97,15 @@ export class Renderer {
         for (const e of events) {
             if (e.kind === 'enemy_killed') {
                 // 死亡特效（黑底发光图，Additive）：大怪 death_big，杂兵 death_small。
-                // core 不传死亡位置，按右路区域散布（与火花一致的近似处理）。
+                // 画在怪【真实死亡坐标】(事件带 x/y)——即兵线处，随 DPS 强弱前后移动，不固定。
                 const big = e.cfg.type === 'brute' || e.cfg.type === 'mini_boss' || e.cfg.type === 'boss';
                 this.deaths.push({
-                    x: LANE_RIGHT_X + (Math.random()-0.5)*120, y: -360 + (Math.random()-0.5)*200,
-                    life: 1, tex: big ? 'death_big' : 'death_small', dia: (big ? e.cfg.radius*2.6 : e.cfg.radius*2.0),
+                    x: e.x + (Math.random()-0.5)*20, y: e.y + (Math.random()-0.5)*20,
+                    life: 1, tex: big ? 'death_big' : 'death_small', dia: (big ? e.cfg.radius*7 : e.cfg.radius*5),
                 });
-                // 击杀火花：在右路出几粒
+                // 击杀火花：在怪死亡位置出几粒
                 for (let i = 0; i < 5; i++)
-                    this.sparks.push({ x: LANE_RIGHT_X + (Math.random()-0.5)*60, y: -380 + (Math.random()-0.5)*80,
+                    this.sparks.push({ x: e.x + (Math.random()-0.5)*40, y: e.y + (Math.random()-0.5)*40,
                                        vx: (Math.random()-0.5)*8, vy: 4+Math.random()*6, life: 1, col: '#FFD86B' });
             } else if (e.kind === 'player_hit' && e.hp < this._lastHp) {
                 // 掉血时闪红+震屏
@@ -235,9 +235,7 @@ export class Renderer {
         this._wall(c, 0, 26, false);          // 左外墙（亮面朝右）
         this._wall(c, midX - 18, 36, true);   // 中央隔墙（双面，较厚）
         this._wall(c, 750 - 26, 26, false, true); // 右外墙（亮面朝左，镜像）
-        // 底线（怪到此线扣血，保留——是玩法可读性关键线）
-        c.strokeStyle = 'rgba(255,90,90,0.55)'; c.lineWidth = 3;
-        c.beginPath(); c.moveTo(0, this.ty(BASELINE_Y)); c.lineTo(750, this.ty(BASELINE_Y)); c.stroke();
+        // 掉血线不绘制(用户要求隐藏)。判定仍按 BASELINE_Y 生效。
     }
 
     // 画一道竖直立体砖墙：x=左缘, ww=宽, divider=是否中央隔墙(双面立体), flip=镜像(右外墙)
@@ -267,6 +265,7 @@ export class Renderer {
         c.strokeRect(x + 0.5, 0, ww - 1, 1334);
         c.restore();
     }
+    // 注：掉血线(BASELINE_Y)不再绘制(用户要求隐藏)——判定仍生效,只是视觉不画。
 
     _gates(c, w) {
         for (const g of w.gates) {
@@ -422,7 +421,8 @@ export class Renderer {
         // ② 每人相位错开的 sin 上下颠→一团此起彼伏=活的 ③ idle 浮动/移动摆动全代码补间(美术只给静态立绘)。
         // 人数动态缩放：1 人时最大(170)，人多时缩小(底 90)，避免一堆大立绘糊成一片。
         const cnt = w.state.personCount;
-        const groupDia = Math.max(90, 170 - Math.log2(Math.max(1, cnt)) * 16);
+        // 主角小队单体尺寸：固定(不缩),人多靠"人堆铺开"表现。单体 78px,人挨人能看清又够大。
+        const groupDia = 78;
         const layout = personLayout(cnt);
         const dudes = layout.map((p, i) => {
             const phase = i * 1.7;                          // 个体相位错开(质数感间隔)
