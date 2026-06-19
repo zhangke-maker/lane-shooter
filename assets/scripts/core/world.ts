@@ -166,7 +166,7 @@ export class GameWorld {
         // L1 开局预置怪：堵"开局跑去长时间刷道具"的投机——玩家一上来就得先守右路打怪。
         // y 从【半屏一直铺到屏顶】(midY→SCREEN_TOP)形成一条连续往下走的怪龙：第一波(半屏)清完时,
         // 上方的预置怪正好接着下来,无缝衔接到正常出怪流——消除"第一波清完到正常怪下来"的 5s 空窗(用户要"接上")。
-        // 血量 ÷HORDE_DENSITY 与正常出怪一致(否则单只血 ×8 变厚,渲染按 maxHp 染红像高级怪——已修 bug)。
+        // 血量 ÷HORDE_DENSITY(L1=24) 与正常出怪一致(否则单只血变厚,渲染按 maxHp 染红像高级怪——已修 bug)。
         if (this.state.level === 1 && this._def) {
             const hpMul0 = this._def.threat[0].hpMul / (this._def.hordeDensity ?? HORDE_DENSITY);
             const type = this._def.enemyPool[0];
@@ -327,7 +327,7 @@ export class GameWorld {
             this._burstTimer = 1.0 + this._rng.next() * 1.5;  // 每 1~2.5s 换一次波段
         }
         // 怪海密度：出怪量 ×density 造"满屏怪海"，同时单只血量 ÷density，使总威胁基本守恒。
-        // 每关可覆盖(L1 怪极脆用 8 避开血量地板,其他关默认 24 填满右路)。
+        // 每关可覆盖 hordeDensity(L1=24,base.hp 已×100 无血量地板失真;省略则默认 36 填满右路)。
         const density = this._def.hordeDensity ?? HORDE_DENSITY;
         this._spawnAccum += spawnRate * density * this._burstMul * dt;
         while (this._spawnAccum >= 1) {

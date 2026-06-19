@@ -1,7 +1,7 @@
 // 网页 Canvas 渲染层 —— 读 GameWorld 快照画图，复用纯TS核心（零改动）
 // 坐标系：world 原点屏幕中心、Y 向上；canvas 原点左上、Y 向下 → 需翻转
 import {
-    LANE_LEFT_X, LANE_RIGHT_X, SCREEN_TOP, PLAYER_Y, BASELINE_Y, weaponStat, weaponName, personLayout,
+    SCREEN_TOP, PLAYER_Y, BASELINE_Y, weaponStat, weaponName, personLayout,
 } from './lib/types.js';
 
 const W = 375, H = 667;   // 逻辑半宽/半高（world 范围 X∈[-375,375] Y∈[-667,667] 的一半）

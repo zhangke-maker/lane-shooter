@@ -10,7 +10,8 @@ const bot = makeStrategyBot(SKILL_EXPERT); bot.reset?.();
 const dt = 1 / 60;
 let t = 0, curLv = 1, lastLane = '', leftFrames = 0, total = 0, switches = 0;
 
-function bar(hp: number) { const n = Math.round(hp / 5); return '█'.repeat(Math.max(0, n)) + '░'.repeat(Math.max(0, 20 - n)); }
+// 20 格血条:按 maxHp 比例(不硬编码刻度,数值×100 后仍正确)。
+function bar(hp: number) { const n = Math.round(hp / w.state.maxHp * 20); return '█'.repeat(Math.max(0, Math.min(20, n))) + '░'.repeat(Math.max(0, 20 - n)); }
 function log(note: string) {
     const lane = w.playerX < -50 ? '左🔧' : '右⚔️';
     console.log(`${t.toFixed(1).padStart(5)} | ${lane} | ${bar(w.state.hp)} ${String(Math.ceil(w.state.hp)).padStart(3)} | ${weaponName(w.state.weaponLevel).padEnd(3)}×${w.state.personCount} | ${note}`);
